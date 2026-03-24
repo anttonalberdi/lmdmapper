@@ -1,0 +1,84 @@
+{
+  "name": "lmdmapper",
+  "version": "1.2.1",
+  "buildDate": "2026-03-24",
+  "description": "LMDmapper - Leica .lif spatial visualization tool (v1.2.1)",
+  "author": "",
+  "license": "MIT",
+  "main": "dist-electron/main/main.js",
+  "type": "commonjs",
+  "scripts": {
+    "dev": "concurrently -k \"npm:dev:renderer\" \"npm:dev:main\" \"npm:dev:electron\"",
+    "dev:renderer": "vite",
+    "dev:main": "tsc -p tsconfig.main.json --watch",
+    "dev:electron": "wait-on tcp:127.0.0.1:5174 dist-electron/main/main.js && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5174 nodemon --watch dist-electron --exec \"electron .\"",
+    "build": "npm run build:renderer && npm run build:main && electron-builder",
+    "build:renderer": "vite build",
+    "build:main": "tsc -p tsconfig.main.json",
+    "lint": "eslint . --ext .ts,.tsx",
+    "generate:fixture": "node scripts/generate-toy-lif.js",
+    "release:build": "node scripts/release-build.js"
+  },
+  "dependencies": {
+    "fast-xml-parser": "^5.3.4",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.30",
+    "@types/react": "^18.2.66",
+    "@types/react-dom": "^18.2.22",
+    "@typescript-eslint/eslint-plugin": "^7.5.0",
+    "@typescript-eslint/parser": "^7.5.0",
+    "@vitejs/plugin-react": "^4.2.1",
+    "concurrently": "^8.2.2",
+    "cross-env": "^7.0.3",
+    "electron": "^40.2.1",
+    "electron-builder": "^26.7.0",
+    "eslint": "^8.57.0",
+    "eslint-plugin-react": "^7.34.1",
+    "eslint-plugin-react-hooks": "^4.6.0",
+    "nodemon": "^3.1.0",
+    "typescript": "^5.4.5",
+    "vite": "^7.3.1",
+    "wait-on": "^7.2.0"
+  },
+  "build": {
+    "appId": "com.lmdmapper.app",
+    "productName": "LMDmapper",
+    "artifactName": "lmdmapper_${version}_${arch}_${os}.${ext}",
+    "directories": {
+      "buildResources": "build",
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "icon": "icon.icns",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "win": {
+      "icon": "icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    }
+  }
+}
