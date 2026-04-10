@@ -1,4 +1,4 @@
-# LMDmapper (v1.2.1)
+# LMDmapper (v1.2.3)
 
 Leica `.lif` spatial visualization tool built with Electron + Vite + React + TypeScript.
 
@@ -52,9 +52,9 @@ npm run generate:fixture
 
 This writes `toy.lif` in the project root. Use **Import LIF files** in the app to load it.
 
-## Limitations (v1.2.1)
+## Limitations (v1.2.3)
 - Only supports 2D RGB, 8-bit, interleaved data (C=3)
-- Elements with other formats are listed but show “Unsupported format (v1.2.1)”
+- Elements with other formats are listed but show “Unsupported format (v1.2.3)”
 - Spatial layout requires StageposX/StageposY metadata
 
 ## Notes

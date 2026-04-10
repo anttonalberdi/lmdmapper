@@ -130,11 +130,12 @@ const getNextPatchVersion = (version) => {
   return `${major}.${minor}.${patch + 1}`;
 };
 
-const updateChangelog = () => {
+const updateChangelog = (targetVersion) => {
   const changelogPath = path.join(ROOT, 'CHANGELOG.md');
   const notesBody = normalizeNotesBody(fs.readFileSync(notesPath, 'utf8'));
   const date = new Date().toISOString().slice(0, 10);
-  const section = `## [${options.version}] - ${date}\n${notesBody}\n`;
+  const section = `## [${options.version}] - ${date}\n\n${notesBody}\n`;
+  const unreleasedSection = `## [Unreleased]\nTarget: ${targetVersion}\n\n- Log all new changes here for the upcoming ${targetVersion} release.\n`;
   let changelog = fs.existsSync(changelogPath)
     ? fs.readFileSync(changelogPath, 'utf8')
     : `# Changelog\n\nAll notable changes to this project are documented in this file.\n\n## [Unreleased]\n\n`;
@@ -144,31 +145,16 @@ const updateChangelog = () => {
   }
 
   if (changelog.includes('## [Unreleased]')) {
-    changelog = changelog.replace('## [Unreleased]', `## [Unreleased]\n\n${section}`);
+    changelog = changelog.replace(
+      /## \[Unreleased\][\s\S]*?(?=\n## \[|$)/,
+      `${unreleasedSection}\n${section}`
+    );
   } else {
-    changelog = `${changelog.trimEnd()}\n\n${section}`;
+    changelog = `${changelog.trimEnd()}\n\n${unreleasedSection}\n${section}`;
   }
 
   if (!options.dryRun) {
     fs.writeFileSync(changelogPath, changelog, 'utf8');
-  }
-};
-
-const updateUnreleasedTarget = (targetVersion) => {
-  const changelogPath = path.join(ROOT, 'CHANGELOG.md');
-  if (!fs.existsSync(changelogPath)) {
-    return;
-  }
-  const current = fs.readFileSync(changelogPath, 'utf8');
-  if (!current.includes('## [Unreleased]')) {
-    return;
-  }
-  const next = current.replace(
-    /## \[Unreleased\]\n(?:Target: [^\n]*\n)?(?:\n- Log all new changes here for the upcoming [^\n]+\n)?/,
-    `## [Unreleased]\nTarget: ${targetVersion}\n\n- Log all new changes here for the upcoming ${targetVersion} release.\n`
-  );
-  if (!options.dryRun && next !== current) {
-    fs.writeFileSync(changelogPath, next, 'utf8');
   }
 };
 
@@ -240,8 +226,7 @@ const main = () => {
   run('npm', ['version', options.version, '--no-git-tag-version']);
   run('npm', ['install', '--package-lock-only']);
   syncVersionStrings();
-  updateChangelog();
-  updateUnreleasedTarget(nextPatchVersion);
+  updateChangelog(nextPatchVersion);
   ensureNextReleaseNotes(nextPatchVersion);
 
   if (!options.skipLint) {

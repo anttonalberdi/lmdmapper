@@ -11,13 +11,14 @@ import type { LifElement, LmdLoadResponse, LifParseResponse, LmdSaveResponse } f
 import packageJson from '../../package.json';
 import logo from './assets/logo.png';
 
-const EMPTY_STATE = 'Import LIF files to start a project.';
+const EMPTY_STATE = 'Import LIF files to start a session.';
 const USER_DIRECTORY_KEY = 'lmdmapper.userDirectory';
 const DEFAULT_SESSION_USERS = ['Amalia Bogri', 'Bryan Wang', 'Jaime Ramirez', 'Nanna Gaun'];
 const DEFAULT_STAGE_POSITION = 2;
 const DEFAULT_MICROSAMPLE_START = 1;
 const APP_VERSION = typeof packageJson.version === 'string' ? packageJson.version : '0.0.0';
 const MANUAL_COORDINATE_LABEL = 'Manual coordinate';
+const DEFAULT_MICRONS_PER_PIXEL = 0.326137;
 
 type ThumbState = {
   canvas: HTMLCanvasElement;
@@ -750,6 +751,149 @@ const normalizePlateCount = (value: unknown): 1 | 2 => {
 const createCryoStateArray = <T,>(factory: (index: number) => T): T[] =>
   Array.from({ length: MAX_CRYOSECTIONS }, (_, index) => factory(index));
 
+const normalizeSourceFilePath = (value: string) => value.trim().replace(/\\/g, '/').toLowerCase();
+const normalizeSourceFileName = (value: string) =>
+  normalizeSourceFilePath(value).split('/').pop() ?? '';
+const buildSourceFileNameKey = (files: string[]) =>
+  files.map(normalizeSourceFileName).filter((value) => value.length > 0).sort().join('|');
+
+const normalizeCsvSourceGroupId = (value: unknown): string | null => {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : null;
+};
+
+const createCsvSourceGroupId = () =>
+  `csvsrc_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+
+const buildSharedCsvSourceKey = (
+  files: string[],
+  cryoIndex: number,
+  sourceGroupId?: string | null
+) => {
+  const normalizedGroupId = normalizeCsvSourceGroupId(sourceGroupId);
+  if (normalizedGroupId) {
+    return `group:${normalizedGroupId}`;
+  }
+  const normalized = files
+    .map(normalizeSourceFilePath)
+    .filter((value) => value.length > 0)
+    .sort();
+  return normalized.length > 0 ? normalized.join('|') : `cryo:${cryoIndex}`;
+};
+
+const reconcileCsvSourceGroupIds = (
+  csvFilesByCryo: string[][],
+  currentSourceGroupIdsByCryo: Array<string | null | undefined>
+) => {
+  const nextSourceGroupIdsByCryo = createCryoStateArray((index) =>
+    normalizeCsvSourceGroupId(currentSourceGroupIdsByCryo[index])
+  );
+  const cryoIndexesByPathKey = new Map<string, number[]>();
+
+  for (let cryoIndex = 0; cryoIndex < MAX_CRYOSECTIONS; cryoIndex += 1) {
+    if ((csvFilesByCryo[cryoIndex]?.length ?? 0) === 0) {
+      nextSourceGroupIdsByCryo[cryoIndex] = null;
+      continue;
+    }
+    const pathKey = buildSharedCsvSourceKey(csvFilesByCryo[cryoIndex] ?? [], cryoIndex, null);
+    if (pathKey.startsWith('cryo:')) {
+      continue;
+    }
+    const existing = cryoIndexesByPathKey.get(pathKey) ?? [];
+    existing.push(cryoIndex);
+    cryoIndexesByPathKey.set(pathKey, existing);
+  }
+
+  for (const cryoIndexes of cryoIndexesByPathKey.values()) {
+    if (cryoIndexes.length < 2) {
+      continue;
+    }
+    const existingGroupId = cryoIndexes
+      .map((index) => nextSourceGroupIdsByCryo[index])
+      .find((value): value is string => Boolean(value));
+    const sharedGroupId = existingGroupId ?? createCsvSourceGroupId();
+    for (const cryoIndex of cryoIndexes) {
+      nextSourceGroupIdsByCryo[cryoIndex] = sharedGroupId;
+    }
+  }
+
+  return nextSourceGroupIdsByCryo;
+};
+
+const getPlateSegmentColumnBounds = (assignment: PlateAssignment, segmentIndex: 0 | 1) => {
+  const startCol = assignment.split && segmentIndex === 1 ? 6 : 0;
+  const endCol = assignment.split && segmentIndex === 0 ? 5 : 11;
+  return { startCol, endCol, width: endCol - startCol + 1 };
+};
+
+const buildCryoCsvTargets = (
+  cryoIndex: number,
+  plateCount: number,
+  assignments: PlateAssignment[],
+  csvFilesByCryo: string[][],
+  csvSourceGroupIdsByCryo: Array<string | null>
+) => {
+  const targets: Array<{
+    plateIndex: number;
+    startCol: number;
+    endCol: number;
+    sourceStartCol: number;
+    sourceEndCol: number;
+  }> = [];
+  const nextSourceColByKey = new Map<string, number>();
+  const targetSourceKey = buildSharedCsvSourceKey(
+    csvFilesByCryo[cryoIndex] ?? [],
+    cryoIndex,
+    csvSourceGroupIdsByCryo[cryoIndex]
+  );
+
+  for (let plateIndex = 0; plateIndex < plateCount; plateIndex += 1) {
+    const assignment =
+      assignments[plateIndex] ?? {
+        split: false,
+        segments: [createPlateSegmentAssignment(null), createPlateSegmentAssignment(null)]
+      };
+    const segmentIndexes: Array<0 | 1> = assignment.split ? [0, 1] : [0];
+    for (const segmentIndex of segmentIndexes) {
+      const segmentCryoIndex = assignment.segments[segmentIndex]?.cryoIndex;
+      if (
+        segmentCryoIndex === null ||
+        segmentCryoIndex === undefined ||
+        segmentCryoIndex < 0 ||
+        segmentCryoIndex >= MAX_CRYOSECTIONS
+      ) {
+        continue;
+      }
+      const { startCol, endCol, width } = getPlateSegmentColumnBounds(assignment, segmentIndex);
+      const sourceKey = buildSharedCsvSourceKey(
+        csvFilesByCryo[segmentCryoIndex] ?? [],
+        segmentCryoIndex,
+        csvSourceGroupIdsByCryo[segmentCryoIndex]
+      );
+      const sourceStartCol = nextSourceColByKey.get(sourceKey) ?? 0;
+      nextSourceColByKey.set(sourceKey, sourceStartCol + width);
+      if (segmentCryoIndex !== cryoIndex) {
+        continue;
+      }
+      targets.push({
+        plateIndex,
+        startCol,
+        endCol,
+        sourceStartCol,
+        sourceEndCol: sourceStartCol + width - 1
+      });
+    }
+  }
+
+  return {
+    targets,
+    totalAssignedColumns: nextSourceColByKey.get(targetSourceKey) ?? 0
+  };
+};
+
 const replaceAt = <T,>(items: T[], index: number, value: T): T[] => {
   const next = items.slice();
   next[index] = value;
@@ -758,6 +902,24 @@ const replaceAt = <T,>(items: T[], index: number, value: T): T[] => {
 
 const createPlateCells = (): SampleType[][] =>
   PLATE_ROWS.map(() => PLATE_COLS.map(() => DEFAULT_SAMPLE));
+
+const csvPlatesContainManualOrDerivedLinks = (plates: CsvCell[][][]) => {
+  for (const plate of plates) {
+    for (const row of plate) {
+      for (const cell of row) {
+        if (
+          cell.manualAssigned === true ||
+          cell.inferred === true ||
+          cell.inferenceConfirmed === true ||
+          isManualCoordinateLabel(cell.images)
+        ) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+};
 
 const createCollectionCells = (): CollectionCell[][] =>
   PLATE_ROWS.map(() => PLATE_COLS.map(() => ({ left: 0, right: 0, rightTouched: false })));
@@ -1562,6 +1724,7 @@ const isVersionAtMost = (value: string, ceiling: string): boolean => {
 };
 
 type RawCsvRow = {
+  type: string;
   areaByLetter: Record<string, string>;
   imageNames: string;
   coords: string;
@@ -1619,6 +1782,7 @@ const parseCsvText = (text: string): RawCsvRow[] => {
   const indexByKey = new Map(
     header.map((name, index) => [normalizeHeaderKey(name), index])
   );
+  const typeIndex = indexByKey.get(normalizeHeaderKey('Type'));
 
   const areaIndices: Record<string, number | undefined> = {};
   for (const letter of PLATE_ROWS) {
@@ -1663,6 +1827,7 @@ const parseCsvText = (text: string): RawCsvRow[] => {
       areaByLetter[letter] = idx !== undefined ? (cols[idx] ?? '').trim() : '';
     }
     rows.push({
+      type: typeIndex !== undefined ? (cols[typeIndex] ?? '').trim() : '',
       areaByLetter,
       imageNames: imageIndex !== undefined ? (cols[imageIndex] ?? '').trim() : '',
       coords: coordIndex !== undefined ? (cols[coordIndex] ?? '').trim() : ''
@@ -1796,6 +1961,17 @@ const detectRowLetter = (row: RawCsvRow): string | undefined => {
     return lettersWithValues[0];
   }
   return undefined;
+};
+
+const isIgnoredCsvRow = (row: RawCsvRow): boolean => {
+  const normalizedType = row.type.trim().toLowerCase();
+  if (normalizedType && normalizedType !== 'ellipse') {
+    return true;
+  }
+  return PLATE_ROWS.some((letter) => {
+    const areaValue = parseAreaValue(row.areaByLetter[letter]);
+    return areaValue !== undefined && areaValue <= 0;
+  });
 };
 
 const parseCoords = (value: string): { x?: number; y?: number } => {
@@ -2069,6 +2245,9 @@ export default function App(): JSX.Element {
   const [csvFilesByCryo, setCsvFilesByCryo] = useState<string[][]>(() =>
     createCryoStateArray(() => [])
   );
+  const [csvSourceGroupIdsByCryo, setCsvSourceGroupIdsByCryo] = useState<Array<string | null>>(() =>
+    createCryoStateArray(() => null)
+  );
   const [csvPlatesByCryo, setCsvPlatesByCryo] = useState<CsvCell[][][][]>(() =>
     createCryoStateArray(() => [createCsvCells(), createCsvCells()])
   );
@@ -2096,7 +2275,7 @@ export default function App(): JSX.Element {
     'project' | 'design' | 'viewer' | 'metadata' | 'collection' | 'overview'
   >('project');
   const [imageOpacity, setImageOpacity] = useState(1);
-  const [micronsPerPixel, setMicronsPerPixel] = useState(0.33);
+  const [micronsPerPixel, setMicronsPerPixel] = useState(DEFAULT_MICRONS_PER_PIXEL);
   const [showCutPoints, setShowCutPoints] = useState(true);
   const [filterPre, setFilterPre] = useState(true);
   const [filterPost, setFilterPost] = useState(true);
@@ -2177,6 +2356,7 @@ export default function App(): JSX.Element {
     useState<OrphanAssignmentPromptState | null>(null);
   const [manualCoordinatePrompt, setManualCoordinatePrompt] =
     useState<ManualCoordinatePromptState | null>(null);
+  const [detachCryoPromptOpen, setDetachCryoPromptOpen] = useState(false);
   const [selectedOrphanAssignmentTargetKey, setSelectedOrphanAssignmentTargetKey] = useState<
     string | null
   >(null);
@@ -2543,41 +2723,29 @@ export default function App(): JSX.Element {
     [getCryosectionName, getPlateAssignment]
   );
   const getCryoCsvTargets = useCallback(
-    (cryoIndex: number) => {
-      const targets: Array<{
-        plateIndex: number;
-        startCol: number;
-        endCol: number;
-        sourceStartCol: number;
-        sourceEndCol: number;
-      }> = [];
-      let nextSourceCol = 0;
-      for (let plateIndex = 0; plateIndex < plateCount; plateIndex += 1) {
-        const assignment = getPlateAssignment(plateIndex);
-        const segmentIndexes: Array<0 | 1> = assignment.split ? [0, 1] : [0];
-        for (const segmentIndex of segmentIndexes) {
-          if (assignment.segments[segmentIndex]?.cryoIndex !== cryoIndex) {
-            continue;
-          }
-          const startCol = assignment.split && segmentIndex === 1 ? 6 : 0;
-          const endCol = assignment.split && segmentIndex === 0 ? 5 : 11;
-          const width = endCol - startCol + 1;
-          targets.push({
-            plateIndex,
-            startCol,
-            endCol,
-            sourceStartCol: nextSourceCol,
-            sourceEndCol: nextSourceCol + width - 1
-          });
-          nextSourceCol += width;
-        }
+    (
+      cryoIndex: number,
+      options?: {
+        plateCount?: number;
+        assignments?: PlateAssignment[];
+        csvFilesByCryo?: string[][];
+        csvSourceGroupIdsByCryo?: Array<string | null>;
       }
-      return {
-        targets,
-        totalAssignedColumns: nextSourceCol
-      };
+    ) => {
+      const nextPlateCount = options?.plateCount ?? plateCount;
+      const nextAssignments = options?.assignments ?? plateAssignments;
+      const nextCsvFilesByCryo = options?.csvFilesByCryo ?? csvFilesByCryo;
+      const nextCsvSourceGroupIdsByCryo =
+        options?.csvSourceGroupIdsByCryo ?? csvSourceGroupIdsByCryo;
+      return buildCryoCsvTargets(
+        cryoIndex,
+        nextPlateCount,
+        nextAssignments,
+        nextCsvFilesByCryo,
+        nextCsvSourceGroupIdsByCryo
+      );
     },
-    [plateCount, getPlateAssignment]
+    [csvFilesByCryo, csvSourceGroupIdsByCryo, plateAssignments, plateCount]
   );
   const effectivePositiveStarts = useMemo(() => {
     const nextByCryo = Array.from({ length: MAX_CRYOSECTIONS }, () => DEFAULT_MICROSAMPLE_START);
@@ -3102,8 +3270,8 @@ export default function App(): JSX.Element {
     setLegacyCollectionPrompt(null);
     setStatus(
       encodingMode === 'corrected'
-        ? 'Corrected legacy collection Y values for this project.'
-        : 'Kept legacy collection Y values for this project.'
+        ? 'Corrected legacy collection Y values for this session.'
+        : 'Kept legacy collection Y values for this session.'
     );
   };
 
@@ -3260,107 +3428,136 @@ export default function App(): JSX.Element {
     });
   };
 
-  const buildCsvPlates = (
-    rows: RawCsvRow[],
-    targets: Array<{
-      plateIndex: number;
-      startCol: number;
-      endCol: number;
-      sourceStartCol: number;
-      sourceEndCol: number;
-    }>
-  ) => {
-    const resultPlates = Array.from({ length: visiblePlateCount }, () => createCsvCells());
-    const placements: CsvPlacement[] = [];
-    const columns: Array<{ plateIndex: number; colIndex: number; sourceColIndex: number }> = [];
-    for (const target of targets) {
-      const sourceStartCol = Math.max(0, target.sourceStartCol);
-      const sourceEndCol = Math.min(11, target.sourceEndCol);
-      for (let sourceColIndex = sourceStartCol; sourceColIndex <= sourceEndCol; sourceColIndex += 1) {
-        const offset = sourceColIndex - target.sourceStartCol;
-        const colIndex = target.startCol + offset;
-        if (colIndex > target.endCol) {
-          break;
+  const buildCsvPlates = useCallback(
+    (
+      rows: RawCsvRow[],
+      targets: Array<{
+        plateIndex: number;
+        startCol: number;
+        endCol: number;
+        sourceStartCol: number;
+        sourceEndCol: number;
+      }>
+    ) => {
+      const resultPlates = Array.from({ length: visiblePlateCount }, () => createCsvCells());
+      const sourceColumns = Array.from({ length: PLATE_COLS.length }, () => createCsvCells()[0]);
+      let nextColumn = 0;
+      let currentColumn = -1;
+      let expectedRowIndex = 0;
+      let currentAreaValue: number | undefined;
+      let ignoredRowCount = 0;
+      let ignoredNonEllipseCount = 0;
+      let ignoredZeroAreaCount = 0;
+
+      for (let sourceOrder = 0; sourceOrder < rows.length; sourceOrder += 1) {
+        const row = rows[sourceOrder];
+        if (isIgnoredCsvRow(row)) {
+          ignoredRowCount += 1;
+          const normalizedType = row.type.trim().toLowerCase();
+          if (normalizedType && normalizedType !== 'ellipse') {
+            ignoredNonEllipseCount += 1;
+          }
+          if (
+            PLATE_ROWS.some((letter) => {
+              const areaValue = parseAreaValue(row.areaByLetter[letter]);
+              return areaValue !== undefined && areaValue <= 0;
+            })
+          ) {
+            ignoredZeroAreaCount += 1;
+          }
+          continue;
         }
-        columns.push({ plateIndex: target.plateIndex, colIndex, sourceColIndex });
-      }
-    }
-    let nextColumn = 0;
-    let currentColumn = -1;
-    let expectedRowIndex = 0;
-    let currentAreaValue: number | undefined;
+        const detectedLetter = detectRowLetter(row);
+        let rowIndex =
+          detectedLetter !== undefined ? PLATE_ROWS.indexOf(detectedLetter) : expectedRowIndex;
+        if (rowIndex < 0) {
+          rowIndex = expectedRowIndex;
+        }
+        const letter = detectedLetter ?? PLATE_ROWS[rowIndex];
+        const areaValue = parseAreaValue(row.areaByLetter[letter]);
 
-    for (let sourceOrder = 0; sourceOrder < rows.length; sourceOrder += 1) {
-      const row = rows[sourceOrder];
-      const detectedLetter = detectRowLetter(row);
-      let rowIndex =
-        detectedLetter !== undefined ? PLATE_ROWS.indexOf(detectedLetter) : expectedRowIndex;
-      if (rowIndex < 0) {
-        rowIndex = expectedRowIndex;
-      }
-      const letter = detectedLetter ?? PLATE_ROWS[rowIndex];
-      const areaValue = parseAreaValue(row.areaByLetter[letter]);
-
-      if (currentColumn < 0) {
-        currentColumn = nextColumn;
-        nextColumn += 1;
-        currentAreaValue = undefined;
-      }
-
-      if (areaValue !== undefined) {
-        if (currentAreaValue === undefined) {
-          currentAreaValue = areaValue;
-        } else if (areaValue !== currentAreaValue) {
+        if (currentColumn < 0) {
           currentColumn = nextColumn;
           nextColumn += 1;
-          currentAreaValue = areaValue;
+          currentAreaValue = undefined;
+        }
+
+        if (areaValue !== undefined) {
+          if (currentAreaValue === undefined) {
+            currentAreaValue = areaValue;
+          } else if (areaValue !== currentAreaValue) {
+            currentColumn = nextColumn;
+            nextColumn += 1;
+            currentAreaValue = areaValue;
+          }
+        }
+        if (currentColumn < 0 || currentColumn >= sourceColumns.length) {
+          expectedRowIndex = (rowIndex + 1) % PLATE_ROWS.length;
+          continue;
+        }
+
+        const imageNames = row.imageNames.trim();
+        const { preImage, cutImage } = parseImageNames(imageNames);
+        const coords = parseCoords(row.coords);
+
+        const present =
+          areaValue !== undefined ||
+          imageNames.length > 0 ||
+          preImage !== undefined ||
+          cutImage !== undefined ||
+          coords.x !== undefined ||
+          coords.y !== undefined;
+
+        const nextCell: CsvCell = {
+          size: areaValue,
+          images: imageNames,
+          preImage,
+          cutImage,
+          pixelX: coords.x,
+          pixelY: coords.y,
+          sourceOrder,
+          present
+        };
+        sourceColumns[currentColumn][rowIndex] = nextCell;
+
+        expectedRowIndex = (rowIndex + 1) % PLATE_ROWS.length;
+        // Do not auto-advance on row count; only advance when area size changes.
+      }
+
+      for (const target of targets) {
+        const sourceStartCol = Math.max(0, target.sourceStartCol);
+        const sourceEndCol = Math.min(11, target.sourceEndCol);
+        for (
+          let sourceColIndex = sourceStartCol;
+          sourceColIndex <= sourceEndCol;
+          sourceColIndex += 1
+        ) {
+          const offset = sourceColIndex - target.sourceStartCol;
+          const colIndex = target.startCol + offset;
+          if (colIndex > target.endCol || target.plateIndex >= resultPlates.length) {
+            break;
+          }
+          for (let rowIndex = 0; rowIndex < PLATE_ROWS.length; rowIndex += 1) {
+            const sourceCell = sourceColumns[sourceColIndex]?.[rowIndex];
+            resultPlates[target.plateIndex][rowIndex][colIndex] = sourceCell
+              ? { ...sourceCell }
+              : {};
+          }
         }
       }
 
-      const target = columns[currentColumn];
-      if (!target || target.plateIndex >= resultPlates.length) {
-        expectedRowIndex = (rowIndex + 1) % PLATE_ROWS.length;
-        continue;
-      }
-      const { plateIndex, colIndex } = target;
-
-      const imageNames = row.imageNames.trim();
-      const { preImage, cutImage } = parseImageNames(imageNames);
-      const coords = parseCoords(row.coords);
-
-      const present =
-        areaValue !== undefined ||
-        imageNames.length > 0 ||
-        preImage !== undefined ||
-        cutImage !== undefined ||
-        coords.x !== undefined ||
-        coords.y !== undefined;
-
-      const nextCell: CsvCell = {
-        size: areaValue,
-        images: imageNames,
-        preImage,
-        cutImage,
-        pixelX: coords.x,
-        pixelY: coords.y,
-        sourceOrder,
-        present
+      const placements = flattenCsvPlacementsFromPlates(resultPlates);
+      return {
+        resultPlates,
+        placements,
+        sourceColumnCount: nextColumn,
+        ignoredRowCount,
+        ignoredNonEllipseCount,
+        ignoredZeroAreaCount
       };
-      resultPlates[plateIndex][rowIndex][colIndex] = nextCell;
-      placements.push({
-        ...nextCell,
-        plateIndex,
-        rowIndex,
-        colIndex,
-        rowLetter: letter
-      });
-
-      expectedRowIndex = (rowIndex + 1) % PLATE_ROWS.length;
-      // Do not auto-advance on row count; only advance when area size changes.
-    }
-
-    return { resultPlates, placements };
-  };
+    },
+    [visiblePlateCount]
+  );
 
   const elementByCryo = useMemo(() => {
     return elementsByCryo.map((list) => {
@@ -6181,6 +6378,7 @@ export default function App(): JSX.Element {
       cryosectionData: createCryoStateArray((index) => ({
         lifFiles: lifFilesByCryo[index] ?? [],
         csvFiles: csvFilesByCryo[index] ?? [],
+        csvSourceGroupId: csvSourceGroupIdsByCryo[index] ?? undefined,
         csvPlates: csvPlatesByCryo[index] ?? [createCsvCells(), createCsvCells()],
         csvPlacements: csvPlacementsByCryo[index] ?? []
       })),
@@ -6239,6 +6437,7 @@ export default function App(): JSX.Element {
       projectType,
       lifFilesByCryo,
       csvFilesByCryo,
+      csvSourceGroupIdsByCryo,
       csvPlatesByCryo,
       csvPlacementsByCryo,
       designPlates,
@@ -6325,7 +6524,7 @@ export default function App(): JSX.Element {
     }
     setProjectHistory(nextHistory);
     setLastSavedPath(response.filePath);
-    setStatus(`Saved project: ${response.filePath.split(/[\\\\/]/).pop()}`);
+    setStatus(`Saved session: ${response.filePath.split(/[\\\\/]/).pop()}`);
     setLastSavedSnapshot(JSON.stringify(basePayload));
     setHasUnsavedChanges(false);
   };
@@ -6354,6 +6553,7 @@ export default function App(): JSX.Element {
     setActiveCryosection(0);
     setLifFilesByCryo(createCryoStateArray(() => []));
     setCsvFilesByCryo(createCryoStateArray(() => []));
+    setCsvSourceGroupIdsByCryo(createCryoStateArray(() => null));
     setElementsByCryo(createCryoStateArray(() => []));
     setSelectedIdByCryo(createCryoStateArray(() => null));
     setSelectedIdsByCryo(createCryoStateArray(() => new Set()));
@@ -6375,6 +6575,7 @@ export default function App(): JSX.Element {
     setCollectionColumnWarning(null);
     setCollectionMetadata(EMPTY_COLLECTION_METADATA);
     setLegacyCollectionPrompt(null);
+    setDetachCryoPromptOpen(false);
     setCollapsedPlates([true, true]);
     setCollectionPlates([createCollectionCells(), createCollectionCells()]);
     manualPointUndoStackRef.current = [];
@@ -6427,6 +6628,7 @@ export default function App(): JSX.Element {
     }
     pendingLoadPathRef.current = null;
     const sessionUsers = normalizeUserList(usersOverride ?? selectedSessionUsers);
+    setDetachCryoPromptOpen(false);
     if (!window.lifApi?.loadProject || !window.lifApi?.loadProjectFromPath) {
       setStatus('Load not available.');
       return;
@@ -6555,6 +6757,7 @@ export default function App(): JSX.Element {
         : [];
     const lifFilesByRecord = createCryoStateArray(() => [] as string[]);
     const csvFilesByRecord = createCryoStateArray(() => [] as string[]);
+    const csvSourceGroupIdsByRecord = createCryoStateArray(() => null as string | null);
     const csvPlatesByRecord = createCryoStateArray(() => [createCsvCells(), createCsvCells()]);
     const csvPlacementsByRecord = createCryoStateArray(() => [] as CsvPlacement[]);
     const hasCsvRaw = createCryoStateArray(() => false);
@@ -6571,6 +6774,7 @@ export default function App(): JSX.Element {
         csvFilesByRecord[index] = Array.isArray(entry.csvFiles)
           ? entry.csvFiles.filter((item): item is string => typeof item === 'string')
           : [];
+        csvSourceGroupIdsByRecord[index] = normalizeCsvSourceGroupId(entry.csvSourceGroupId);
         const raw = Array.isArray(entry.csvPlates) ? entry.csvPlates : [];
         if (raw.length) {
           hasCsvRaw[index] = true;
@@ -6597,6 +6801,10 @@ export default function App(): JSX.Element {
       }
       csvPlacementsByRecord[0] = flattenCsvPlacementsFromPlates(csvPlatesByRecord[0]);
     }
+    const nextCsvSourceGroupIdsByRecord = reconcileCsvSourceGroupIds(
+      csvFilesByRecord,
+      csvSourceGroupIdsByRecord
+    );
 
     const legacyPositiveStarts: [number, number] = Array.isArray(projectRecord.cryosectionStartNumbers)
       ? [
@@ -6723,7 +6931,40 @@ export default function App(): JSX.Element {
     })();
     setPlateAssignments(nextPlateAssignments);
 
+    const sharedCsvRepairFlags = createCryoStateArray(() => false);
+    if (!loadedVersion || isVersionAtMost(loadedVersion, '1.2.1')) {
+      const cryosBySource = new Map<string, number[]>();
+      for (let cryoIndex = 0; cryoIndex < MAX_CRYOSECTIONS; cryoIndex += 1) {
+        if ((csvFilesByRecord[cryoIndex]?.length ?? 0) === 0) {
+          continue;
+        }
+        const sourceKey = buildSharedCsvSourceKey(
+          csvFilesByRecord[cryoIndex] ?? [],
+          cryoIndex,
+          nextCsvSourceGroupIdsByRecord[cryoIndex]
+        );
+        const existing = cryosBySource.get(sourceKey) ?? [];
+        existing.push(cryoIndex);
+        cryosBySource.set(sourceKey, existing);
+      }
+      for (const cryoIndexes of cryosBySource.values()) {
+        if (cryoIndexes.length < 2) {
+          continue;
+        }
+        const hasProtectedMappings = cryoIndexes.some((cryoIndex) =>
+          csvPlatesContainManualOrDerivedLinks(csvPlatesByRecord[cryoIndex] ?? [createCsvCells(), createCsvCells()])
+        );
+        if (hasProtectedMappings) {
+          continue;
+        }
+        for (const cryoIndex of cryoIndexes) {
+          sharedCsvRepairFlags[cryoIndex] = true;
+        }
+      }
+    }
+
     setCsvFilesByCryo(csvFilesByRecord);
+    setCsvSourceGroupIdsByCryo(nextCsvSourceGroupIdsByRecord);
     setLifFilesByCryo(lifFilesByRecord);
     setCsvPlatesByCryo(csvPlatesByRecord);
     setCsvPlacementsByCryo(csvPlacementsByRecord);
@@ -6888,7 +7129,9 @@ export default function App(): JSX.Element {
     const opacityValue = Number(viewRaw.imageOpacity);
     setImageOpacity(Number.isFinite(opacityValue) ? Math.max(0, Math.min(1, opacityValue)) : 1);
     const micronValue = Number(viewRaw.micronsPerPixel);
-    setMicronsPerPixel(Number.isFinite(micronValue) && micronValue > 0 ? micronValue : 0.33);
+    setMicronsPerPixel(
+      Number.isFinite(micronValue) && micronValue > 0 ? micronValue : DEFAULT_MICRONS_PER_PIXEL
+    );
     setShowCutPoints(viewRaw.showCutPoints !== false);
     setShowCutLabels(viewRaw.showCutLabels === true);
     setShowCoordinateOrphanPreImages(viewRaw.showCoordinateOrphanPreImages !== false);
@@ -7053,10 +7296,25 @@ export default function App(): JSX.Element {
     setSyncSnapshotOnNext(false);
     setSelectedPlateCells(new Set());
 
+    let sharedCsvRepairFailed = false;
     for (let cryoIndex = 0; cryoIndex < MAX_CRYOSECTIONS; cryoIndex += 1) {
-      if (!hasCsvRaw[cryoIndex] && csvFilesByRecord[cryoIndex].length) {
-        await loadCsvFiles(csvFilesByRecord[cryoIndex], cryoIndex);
+      const shouldRepairSharedCsv = sharedCsvRepairFlags[cryoIndex] === true;
+      if ((shouldRepairSharedCsv || !hasCsvRaw[cryoIndex]) && csvFilesByRecord[cryoIndex].length) {
+        const loaded = await loadCsvFiles(csvFilesByRecord[cryoIndex], cryoIndex, {
+          plateCount: nextPlateCount,
+          assignments: nextPlateAssignments,
+          csvFilesByCryo: csvFilesByRecord,
+          csvSourceGroupIdsByCryo: nextCsvSourceGroupIdsByRecord
+        });
+        if (loaded === false && shouldRepairSharedCsv) {
+          sharedCsvRepairFailed = true;
+        }
       }
+    }
+    if (sharedCsvRepairFailed) {
+      setErrorBanner(
+        'This session was saved before shared CSV routing was fixed. The original CSV files could not be reopened, so the shared plate mappings could not be repaired automatically. Reimport or reuse the CSV files locally to rebuild them.'
+      );
     }
 
     setElementsByCryo(createCryoStateArray(() => []));
@@ -7071,9 +7329,9 @@ export default function App(): JSX.Element {
           await loadLifFiles(lifFilesByRecord[cryoIndex], cryoIndex);
         }
       }
-      setStatus(`Loaded project: ${response.filePath.split(/[\\\\/]/).pop()}`);
+      setStatus(`Loaded session: ${response.filePath.split(/[\\\\/]/).pop()}`);
     } else {
-      setStatus('Project loaded (no LIF files referenced).');
+      setStatus('Session loaded (no LIF files referenced).');
     }
   };
   saveProjectHandlerRef.current = handleSaveProject;
@@ -7725,15 +7983,15 @@ export default function App(): JSX.Element {
         const paddingX = 8;
         const paddingY = 6;
         const lineHeight = Math.max(14, Math.min(18, 12 + zoom * 0.6));
-        const wellText = hovered.well ? formatWellDisplay(hovered.well) : '—';
-        const codeText = hovered.code || '—';
-        const line1 = [
-          { text: wellText, bold: true, align: 'left' as const },
-          { text: codeText, bold: false, align: 'right' as const }
+        const line1 = [{ text: hovered.code || '—', bold: true }];
+        const line2 = [
+          { text: hovered.plateLabel || '—', bold: false },
+          { text: ' · ', bold: false },
+          { text: hovered.well ? formatWellDisplay(hovered.well) : '—', bold: true }
         ];
         const xValue = formatNumber(hovered.x, 2);
         const yValue = formatNumber(hovered.y, 2);
-        const line2 = [
+        const line3 = [
           { text: 'X:', bold: true },
           { text: ` ${xValue}`, bold: false },
           { text: ', ', bold: false },
@@ -7747,9 +8005,9 @@ export default function App(): JSX.Element {
             return total + ctx.measureText(segment.text).width;
           }, 0);
 
-        const maxWidth = Math.max(measureLine(line1), measureLine(line2));
+        const maxWidth = Math.max(measureLine(line1), measureLine(line2), measureLine(line3));
         const boxWidth = maxWidth + paddingX * 2;
-        const boxHeight = lineHeight * 2 + paddingY * 2;
+        const boxHeight = lineHeight * 3 + paddingY * 2;
         let boxX = px + 12;
         let boxY = py - boxHeight - 12;
         if (boxX + boxWidth > canvas.width - 8) {
@@ -7815,6 +8073,7 @@ export default function App(): JSX.Element {
         };
         drawSegments(line1, boxY + paddingY, maxWidth);
         drawSegments(line2, boxY + paddingY + lineHeight, maxWidth);
+        drawSegments(line3, boxY + paddingY + lineHeight * 2, maxWidth);
         ctx.restore();
       }
     } else if (hoveredOrphanImageId) {
@@ -7893,6 +8152,43 @@ export default function App(): JSX.Element {
         }
         ctx.restore();
       }
+    }
+
+    if (
+      mapHoverPositionRef.current &&
+      !mapViewRef.current.isDragging &&
+      !selectionRef.current.isSelecting
+    ) {
+      const hoverStage = mapCanvasToStage(mapHoverPositionRef.current.x, mapHoverPositionRef.current.y);
+      const line = `X: ${formatNumber(hoverStage.x, 2)}  Y: ${formatNumber(hoverStage.y, 2)}`;
+      ctx.save();
+      ctx.font = `500 11px "IBM Plex Sans", sans-serif`;
+      const paddingX = 8;
+      const paddingY = 5;
+      const boxWidth = ctx.measureText(line).width + paddingX * 2;
+      const boxHeight = 22;
+      let boxX = mapHoverPositionRef.current.x + 14;
+      let boxY = mapHoverPositionRef.current.y + 14;
+      if (boxX + boxWidth > canvas.width - 6) {
+        boxX = mapHoverPositionRef.current.x - boxWidth - 14;
+      }
+      if (boxY + boxHeight > canvas.height - 6) {
+        boxY = mapHoverPositionRef.current.y - boxHeight - 14;
+      }
+      boxX = Math.max(6, boxX);
+      boxY = Math.max(6, boxY);
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.88)';
+      ctx.strokeStyle = 'rgba(148, 163, 184, 0.35)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.roundRect(boxX, boxY, boxWidth, boxHeight, 7);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = '#e2e8f0';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      ctx.fillText(line, boxX + paddingX, boxY + paddingY);
+      ctx.restore();
     }
 
     if (overlayMessage) {
@@ -7985,7 +8281,7 @@ export default function App(): JSX.Element {
       minY = defaults.minY;
       maxY = defaults.maxY;
       if (!stageSpec) {
-        overlayMessage = 'Select a stage position in Project to align the overview image.';
+        overlayMessage = 'Select a stage position in Session to align the overview image.';
       }
     } else {
       minX = Math.min(slideBounds!.tl.x, slideBounds!.br.x);
@@ -8365,15 +8661,15 @@ export default function App(): JSX.Element {
         const paddingX = 8;
         const paddingY = 6;
         const lineHeight = Math.max(14, Math.min(18, 12 + zoom * 0.6));
-        const wellText = hovered.well ? formatWellDisplay(hovered.well) : '—';
-        const codeText = hovered.code || '—';
-        const line1 = [
-          { text: wellText, bold: true, align: 'left' as const },
-          { text: codeText, bold: false, align: 'right' as const }
+        const line1 = [{ text: hovered.code || '—', bold: true }];
+        const line2 = [
+          { text: hovered.plateLabel || '—', bold: false },
+          { text: ' · ', bold: false },
+          { text: hovered.well ? formatWellDisplay(hovered.well) : '—', bold: true }
         ];
         const xValue = formatNumber(hovered.x, 2);
         const yValue = formatNumber(hovered.y, 2);
-        const line2 = [
+        const line3 = [
           { text: 'X:', bold: true },
           { text: ` ${xValue}`, bold: false },
           { text: ', ', bold: false },
@@ -8385,9 +8681,9 @@ export default function App(): JSX.Element {
             ctx.font = segment.bold ? boldFont : normalFont;
             return total + ctx.measureText(segment.text).width;
           }, 0);
-        const maxWidth = Math.max(measureLine(line1), measureLine(line2));
+        const maxWidth = Math.max(measureLine(line1), measureLine(line2), measureLine(line3));
         const boxWidth = maxWidth + paddingX * 2;
-        const boxHeight = lineHeight * 2 + paddingY * 2;
+        const boxHeight = lineHeight * 3 + paddingY * 2;
         let boxX = px + 12;
         let boxY = py - boxHeight - 12;
         if (boxX + boxWidth > canvas.width - 8) {
@@ -8453,6 +8749,7 @@ export default function App(): JSX.Element {
         };
         drawSegments(line1, boxY + paddingY, maxWidth);
         drawSegments(line2, boxY + paddingY + lineHeight, maxWidth);
+        drawSegments(line3, boxY + paddingY + lineHeight * 2, maxWidth);
       }
     }
     if (overlayMessage) {
@@ -8717,41 +9014,100 @@ export default function App(): JSX.Element {
     await loadLifFiles(picked, activeCryosection);
   };
 
-  const loadCsvFiles = async (filePaths: string[], cryoIndex: number) => {
-    if (!window.lifApi?.readCsv) {
-      setError('Preload API unavailable. Check Electron preload setup.');
-      setStatus('Preload API unavailable. Check Electron preload setup.');
-      setErrorBanner('Preload API unavailable. Check Electron preload setup.');
-      return;
-    }
-    const allRows: RawCsvRow[] = [];
-    for (const filePath of filePaths) {
-      try {
-        const text = await window.lifApi.readCsv(filePath);
-        allRows.push(...parseCsvText(text));
-      } catch (error) {
-        const message = error instanceof Error ? error.message : 'Failed to read CSV file.';
-        setError(message);
+  const loadCsvFiles = useCallback(
+    async (
+      filePaths: string[],
+      cryoIndex: number,
+      options?: {
+        plateCount?: number;
+        assignments?: PlateAssignment[];
+        csvFilesByCryo?: string[][];
+        csvSourceGroupIdsByCryo?: Array<string | null>;
       }
-    }
-    const { targets, totalAssignedColumns } = getCryoCsvTargets(cryoIndex);
-    const { resultPlates, placements } = buildCsvPlates(allRows, targets);
-    manualPointUndoStackRef.current = [];
-    setCsvPlacementsByCryo((prev) => replaceAt(prev, cryoIndex, placements));
-    setCsvPlatesByCryo((prev) => replaceAt(prev, cryoIndex, resultPlates));
-    const imageRows = allRows.filter((row) => row.imageNames.trim().length > 0).length;
-    const coordRows = allRows.filter((row) => row.coords.trim().length > 0).length;
-    if (totalAssignedColumns > 12) {
-      setErrorBanner(
-        `${getCryosectionName(cryoIndex) || `Cryosection ${cryoIndex + 1}`} is assigned to ${totalAssignedColumns} CSV columns. Only source columns 1-12 are available; extra assignments were ignored.`
+    ) => {
+      if (!window.lifApi?.readCsv) {
+        setError('Preload API unavailable. Check Electron preload setup.');
+        setStatus('Preload API unavailable. Check Electron preload setup.');
+        setErrorBanner('Preload API unavailable. Check Electron preload setup.');
+        return false;
+      }
+      const allRows: RawCsvRow[] = [];
+      let successfulReads = 0;
+      let lastErrorMessage: string | null = null;
+      for (const filePath of filePaths) {
+        try {
+          const text = await window.lifApi.readCsv(filePath);
+          allRows.push(...parseCsvText(text));
+          successfulReads += 1;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Failed to read CSV file.';
+          lastErrorMessage = message;
+          setError(message);
+        }
+      }
+      if (filePaths.length > 0 && successfulReads === 0) {
+        if (lastErrorMessage) {
+          setStatus(lastErrorMessage);
+        }
+        return false;
+      }
+      const nextCsvFilesByCryo =
+        options?.csvFilesByCryo ?? replaceAt(csvFilesByCryo, cryoIndex, [...filePaths]);
+      const nextCsvSourceGroupIdsByCryo =
+        options?.csvSourceGroupIdsByCryo ?? csvSourceGroupIdsByCryo;
+      const { targets, totalAssignedColumns } = getCryoCsvTargets(cryoIndex, {
+        plateCount: options?.plateCount,
+        assignments: options?.assignments,
+        csvFilesByCryo: nextCsvFilesByCryo,
+        csvSourceGroupIdsByCryo: nextCsvSourceGroupIdsByCryo
+      });
+      const {
+        resultPlates,
+        placements,
+        sourceColumnCount,
+        ignoredRowCount,
+        ignoredNonEllipseCount,
+        ignoredZeroAreaCount
+      } = buildCsvPlates(allRows, targets);
+      manualPointUndoStackRef.current = [];
+      setCsvPlacementsByCryo((prev) => replaceAt(prev, cryoIndex, placements));
+      setCsvPlatesByCryo((prev) => replaceAt(prev, cryoIndex, resultPlates));
+      const imageRows = allRows.filter((row) => row.imageNames.trim().length > 0).length;
+      const coordRows = allRows.filter((row) => row.coords.trim().length > 0).length;
+      const warningMessages: string[] = [];
+      if (totalAssignedColumns > 12) {
+        warningMessages.push(
+          `${
+            getCryosectionName(cryoIndex) || `Cryosection ${cryoIndex + 1}`
+          } is assigned to ${totalAssignedColumns} CSV columns. Only source columns 1-12 are available; extra assignments were ignored.`
+        );
+      }
+      if (ignoredRowCount > 0) {
+        warningMessages.push(
+          `${
+            getCryosectionName(cryoIndex) || `Cryosection ${cryoIndex + 1}`
+          } contains ${ignoredRowCount} suspicious CSV row${
+            ignoredRowCount === 1 ? '' : 's'
+          } that were ignored (${ignoredNonEllipseCount} non-Ellipse, ${ignoredZeroAreaCount} zero-area).`
+        );
+      }
+      if (totalAssignedColumns > 0 && sourceColumnCount !== totalAssignedColumns) {
+        warningMessages.push(
+          `${
+            getCryosectionName(cryoIndex) || `Cryosection ${cryoIndex + 1}`
+          } resolved ${sourceColumnCount} source CSV columns, but the current session layout expects ${totalAssignedColumns}.`
+        );
+      }
+      setErrorBanner(warningMessages.length ? warningMessages.join('\n') : null);
+      console.log(
+        `[csv] rows ${allRows.length}, image rows ${imageRows}, coord rows ${coordRows}, source columns ${sourceColumnCount}, ignored rows ${ignoredRowCount}`
       );
-    }
-    console.log(
-      `[csv] rows ${allRows.length}, image rows ${imageRows}, coord rows ${coordRows}`
-    );
-  };
+      return true;
+    },
+    [buildCsvPlates, csvFilesByCryo, csvSourceGroupIdsByCryo, getCryoCsvTargets, getCryosectionName]
+  );
 
-  const handleReuseCoordinateSources = useCallback(() => {
+  const handleReuseCoordinateSources = useCallback(async () => {
     if (coordinatesReuseSource === null || coordinatesReuseSource === activeCryosection) {
       setErrorBanner('Select another cryosection to reuse its LIF and CSV files.');
       return;
@@ -8759,14 +9115,7 @@ export default function App(): JSX.Element {
     const sourceLifFiles = lifFilesByCryo[coordinatesReuseSource] ?? [];
     const sourceElements = elementsByCryo[coordinatesReuseSource] ?? [];
     const sourceCsvFiles = csvFilesByCryo[coordinatesReuseSource] ?? [];
-    const sourceCsvPlates = csvPlatesByCryo[coordinatesReuseSource] ?? [createCsvCells(), createCsvCells()];
-    const sourceCsvPlacements = csvPlacementsByCryo[coordinatesReuseSource] ?? [];
-    if (
-      sourceLifFiles.length === 0 &&
-      sourceCsvFiles.length === 0 &&
-      sourceElements.length === 0 &&
-      sourceCsvPlacements.length === 0
-    ) {
+    if (sourceLifFiles.length === 0 && sourceCsvFiles.length === 0 && sourceElements.length === 0) {
       setErrorBanner('The selected cryosection has no imported LIF or CSV files to reuse.');
       return;
     }
@@ -8779,17 +9128,50 @@ export default function App(): JSX.Element {
         sourceElements.map((item) => ({ ...item }))
       )
     );
-    setCsvFilesByCryo((prev) => replaceAt(prev, activeCryosection, [...sourceCsvFiles]));
-    setCsvPlatesByCryo((prev) =>
-      replaceAt(prev, activeCryosection, cloneCsvPlatesByCryo([sourceCsvPlates])[0])
+    const nextCsvFilesByCryo = replaceAt(csvFilesByCryo, activeCryosection, [...sourceCsvFiles]);
+    let nextCsvSourceGroupIdsByCryo = replaceAt(
+      csvSourceGroupIdsByCryo,
+      activeCryosection,
+      csvSourceGroupIdsByCryo[activeCryosection] ?? null
     );
-    setCsvPlacementsByCryo((prev) =>
-      replaceAt(
-        prev,
+    if (sourceCsvFiles.length > 0) {
+      const sharedGroupId =
+        csvSourceGroupIdsByCryo[coordinatesReuseSource] ??
+        csvSourceGroupIdsByCryo[activeCryosection] ??
+        createCsvSourceGroupId();
+      nextCsvSourceGroupIdsByCryo = replaceAt(
+        nextCsvSourceGroupIdsByCryo,
+        coordinatesReuseSource,
+        sharedGroupId
+      );
+      nextCsvSourceGroupIdsByCryo = replaceAt(
+        nextCsvSourceGroupIdsByCryo,
         activeCryosection,
-        cloneCsvPlacementsByCryo([sourceCsvPlacements])[0]
-      )
+        sharedGroupId
+      );
+    } else {
+      nextCsvSourceGroupIdsByCryo = replaceAt(nextCsvSourceGroupIdsByCryo, activeCryosection, null);
+    }
+    nextCsvSourceGroupIdsByCryo = reconcileCsvSourceGroupIds(
+      nextCsvFilesByCryo,
+      nextCsvSourceGroupIdsByCryo
     );
+    setCsvFilesByCryo(nextCsvFilesByCryo);
+    setCsvSourceGroupIdsByCryo(nextCsvSourceGroupIdsByCryo);
+    if (sourceCsvFiles.length > 0) {
+      const loaded = await loadCsvFiles(sourceCsvFiles, activeCryosection, {
+        csvFilesByCryo: nextCsvFilesByCryo,
+        csvSourceGroupIdsByCryo: nextCsvSourceGroupIdsByCryo
+      });
+      if (loaded === false) {
+        setErrorBanner(
+          'The reused CSV files could not be reopened. Reimport the CSV file for this cryosection locally to rebuild its plate mapping.'
+        );
+      }
+    } else {
+      setCsvPlatesByCryo((prev) => replaceAt(prev, activeCryosection, [createCsvCells(), createCsvCells()]));
+      setCsvPlacementsByCryo((prev) => replaceAt(prev, activeCryosection, []));
+    }
     setSelectedIdByCryo((prev) =>
       replaceAt(prev, activeCryosection, selectedIdByCryo[coordinatesReuseSource] ?? sourceElements[0]?.uiId ?? null)
     );
@@ -8807,13 +9189,66 @@ export default function App(): JSX.Element {
     activeCryosection,
     coordinatesReuseSource,
     csvFilesByCryo,
-    csvPlacementsByCryo,
-    csvPlatesByCryo,
+    csvSourceGroupIdsByCryo,
     elementsByCryo,
     getCryosectionName,
     lifFilesByCryo,
+    loadCsvFiles,
     selectedIdByCryo,
     selectedIdsByCryo
+  ]);
+
+  const handleDetachCoordinateSources = useCallback(() => {
+    const keysToClear = new Set<string>();
+    for (let plateIndex = 0; plateIndex < visiblePlateCount; plateIndex += 1) {
+      for (let rowIndex = 0; rowIndex < PLATE_ROWS.length; rowIndex += 1) {
+        for (let colIndex = 0; colIndex < PLATE_COLS.length; colIndex += 1) {
+          if (getCellCryoIndex(plateIndex, colIndex) !== activeCryosection) {
+            continue;
+          }
+          keysToClear.add(`${plateIndex}-${rowIndex}-${colIndex}`);
+        }
+      }
+    }
+    const nextCoordinateCache = { ...coordinateCache };
+    keysToClear.forEach((key) => {
+      delete nextCoordinateCache[key];
+    });
+
+    manualPointUndoStackRef.current = [];
+    setLifFilesByCryo((prev) => replaceAt(prev, activeCryosection, []));
+    setCsvFilesByCryo((prev) => replaceAt(prev, activeCryosection, []));
+    setCsvSourceGroupIdsByCryo((prev) => replaceAt(prev, activeCryosection, null));
+    setElementsByCryo((prev) => replaceAt(prev, activeCryosection, []));
+    setCsvPlatesByCryo((prev) => replaceAt(prev, activeCryosection, [createCsvCells(), createCsvCells()]));
+    setCsvPlacementsByCryo((prev) => replaceAt(prev, activeCryosection, []));
+    setSelectedIdByCryo((prev) => replaceAt(prev, activeCryosection, null));
+    setSelectedIdsByCryo((prev) => replaceAt(prev, activeCryosection, new Set()));
+    setSelectedCutIdsByCryo((prev) => replaceAt(prev, activeCryosection, new Set()));
+    setCutPointVisibilityByCryo((prev) => replaceAt(prev, activeCryosection, {}));
+    setOrphanImageVisibilityByCryo((prev) => replaceAt(prev, activeCryosection, {}));
+    setCoordinateOverridesByCryo((prev) => replaceAt(prev, activeCryosection, {}));
+    setCoordinateCache(nextCoordinateCache);
+    setCoordinatesReady(Object.keys(nextCoordinateCache).length > 0);
+    setCoordDebug('');
+    setCutPointSearch('');
+    setCoordinatesReuseMenuOpen(false);
+    setCoordinatesCryosectionMenuOpen(false);
+    setOrphanAssignmentPrompt(null);
+    setManualCoordinatePrompt(null);
+    setStatusPrompt(null);
+    setError(null);
+    setErrorBanner(null);
+    setDetachCryoPromptOpen(false);
+    setStatus(
+      `Detached LIF and CSV sources from ${getCryosectionName(activeCryosection) || `Cryosection ${activeCryosection + 1}`}.`
+    );
+  }, [
+    activeCryosection,
+    coordinateCache,
+    getCellCryoIndex,
+    getCryosectionName,
+    visiblePlateCount
   ]);
 
   const handleOpenCsv = async () => {
@@ -8828,8 +9263,49 @@ export default function App(): JSX.Element {
     if (!picked || picked.length === 0) {
       return;
     }
-    setCsvFilesByCryo((prev) => replaceAt(prev, activeCryosection, picked));
-    await loadCsvFiles(picked, activeCryosection);
+    const nextCsvFilesByCryo = replaceAt(csvFilesByCryo, activeCryosection, picked);
+    const previousSourceFileNameKey = buildSourceFileNameKey(
+      csvFilesByCryo[activeCryosection] ?? []
+    );
+    const nextSourceFileNameKey = buildSourceFileNameKey(picked);
+    const matchedSourceCryoIndexes = createCryoStateArray((index) => index)
+      .filter((index) => index !== activeCryosection)
+      .filter(
+        (index) =>
+          nextSourceFileNameKey.length > 0 &&
+          buildSourceFileNameKey(csvFilesByCryo[index] ?? []) === nextSourceFileNameKey
+      );
+    const preservedSourceGroupId =
+      previousSourceFileNameKey.length > 0 &&
+      previousSourceFileNameKey === nextSourceFileNameKey
+        ? csvSourceGroupIdsByCryo[activeCryosection] ?? null
+        : matchedSourceCryoIndexes
+            .map((index) => csvSourceGroupIdsByCryo[index])
+            .find((value): value is string => Boolean(value)) ??
+          (matchedSourceCryoIndexes.length > 0 ? createCsvSourceGroupId() : null);
+    let nextCsvSourceGroupsSeed = replaceAt(
+      csvSourceGroupIdsByCryo,
+      activeCryosection,
+      preservedSourceGroupId
+    );
+    if (preservedSourceGroupId) {
+      for (const index of matchedSourceCryoIndexes) {
+        nextCsvSourceGroupsSeed = replaceAt(nextCsvSourceGroupsSeed, index, preservedSourceGroupId);
+      }
+    }
+    const nextCsvSourceGroupIdsByCryo = reconcileCsvSourceGroupIds(
+      nextCsvFilesByCryo,
+      nextCsvSourceGroupsSeed
+    );
+    setCsvFilesByCryo(nextCsvFilesByCryo);
+    setCsvSourceGroupIdsByCryo(nextCsvSourceGroupIdsByCryo);
+    const loaded = await loadCsvFiles(picked, activeCryosection, {
+      csvFilesByCryo: nextCsvFilesByCryo,
+      csvSourceGroupIdsByCryo: nextCsvSourceGroupIdsByCryo
+    });
+    if (loaded === false) {
+      return;
+    }
     setStatus(`Loaded ${picked.length} CSV file${picked.length > 1 ? 's' : ''}.`);
   };
 
@@ -9146,6 +9622,16 @@ export default function App(): JSX.Element {
     }
   };
 
+  const getMapHoverCursor = (cutPointId: string | null, orphanId: string | null) => {
+    if (cutPointId) {
+      return 'move';
+    }
+    if (orphanId) {
+      return 'help';
+    }
+    return 'crosshair';
+  };
+
   const handleMapPointerDown = (event: PointerEvent<HTMLCanvasElement>) => {
     const canvas = mapCanvasRef.current;
     if (!canvas) {
@@ -9209,7 +9695,7 @@ export default function App(): JSX.Element {
         startStageX: startStage.x,
         startStageY: startStage.y
       };
-      canvas.style.cursor = 'grab';
+      canvas.style.cursor = 'move';
       return;
     }
     selectionRef.current = {
@@ -9253,7 +9739,7 @@ export default function App(): JSX.Element {
       if (hoveredOrphanImageId !== null) {
         setHoveredOrphanImageId(null);
       }
-      canvas.style.cursor = mapPointDragRef.current.moved ? 'grabbing' : 'grab';
+      canvas.style.cursor = 'move';
       return;
     }
 
@@ -9283,7 +9769,7 @@ export default function App(): JSX.Element {
       } else if (nextOrphanId) {
         updateMap();
       }
-      canvas.style.cursor = nextId ? 'grab' : nextOrphanId ? 'help' : '';
+      canvas.style.cursor = getMapHoverCursor(nextId, nextOrphanId);
     }
 
     if (!mapViewRef.current.isDragging) {
@@ -9294,7 +9780,7 @@ export default function App(): JSX.Element {
     const dragDistance = Math.abs(totalDx) + Math.abs(totalDy);
     mapViewRef.current.dragDistance = dragDistance;
     if (dragDistance < 6 * dpr) {
-      canvas.style.cursor = '';
+      canvas.style.cursor = 'grab';
       return;
     }
     mapViewRef.current.panX = mapViewRef.current.startPanX + totalDx * dpr;
@@ -9345,7 +9831,7 @@ export default function App(): JSX.Element {
         } else if (nextOrphanId) {
           updateMap();
         }
-        canvas.style.cursor = nextId ? 'grab' : nextOrphanId ? 'help' : '';
+        canvas.style.cursor = getMapHoverCursor(nextId, nextOrphanId);
       }
       return;
     }
@@ -9395,7 +9881,7 @@ export default function App(): JSX.Element {
         }
       }
       if (canvas) {
-        canvas.style.cursor = hoveredCutPointId ? 'grab' : hoveredOrphanImageId ? 'help' : '';
+        canvas.style.cursor = getMapHoverCursor(hoveredCutPointId, hoveredOrphanImageId);
       }
     }
   };
@@ -9586,18 +10072,18 @@ export default function App(): JSX.Element {
     if (!canvas) {
       return;
     }
+    const rect = canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    const x = (event.clientX - rect.left) * dpr;
+    const y = (event.clientY - rect.top) * dpr;
+    const { baseScale, baseOffsetX, baseOffsetY } = overviewTransformRef.current;
+    const { zoom, panX, panY } = overviewViewRef.current;
+    const worldX = (x - panX) / zoom;
+    const worldY = (y - panY) / zoom;
+    const stageX = (worldX - baseOffsetX) / baseScale;
+    const stageY = (worldY - baseOffsetY) / baseScale;
 
     if (overviewSelection.enabled && overviewSelectionRef.current.isSelecting) {
-      const rect = canvas.getBoundingClientRect();
-      const dpr = window.devicePixelRatio || 1;
-      const sx = (event.clientX - rect.left) * dpr;
-      const sy = (event.clientY - rect.top) * dpr;
-      const { baseScale, baseOffsetX, baseOffsetY } = overviewTransformRef.current;
-      const { zoom, panX, panY } = overviewViewRef.current;
-      const worldX = (sx - panX) / zoom;
-      const worldY = (sy - panY) / zoom;
-      const stageX = (worldX - baseOffsetX) / baseScale;
-      const stageY = (worldY - baseOffsetY) / baseScale;
       const { mode, handle, startRect, startStageX, startStageY } = overviewSelectionRef.current;
       const aspect = getSelectionStageAspect(overviewSelection.aspect);
       const minSize = 1;
@@ -9738,16 +10224,6 @@ export default function App(): JSX.Element {
     }
 
     if (overviewDragRef.current.isDragging) {
-      const rect = canvas.getBoundingClientRect();
-      const dpr = window.devicePixelRatio || 1;
-      const sx = (event.clientX - rect.left) * dpr;
-      const sy = (event.clientY - rect.top) * dpr;
-      const { baseScale, baseOffsetX, baseOffsetY } = overviewTransformRef.current;
-      const { zoom, panX, panY } = overviewViewRef.current;
-      const worldX = (sx - panX) / zoom;
-      const worldY = (sy - panY) / zoom;
-      const stageX = (worldX - baseOffsetX) / baseScale;
-      const stageY = (worldY - baseOffsetY) / baseScale;
       const deltaX = stageX - overviewDragRef.current.startStageX;
       const deltaY = stageY - overviewDragRef.current.startStageY;
       updateOverviewLayer(
@@ -9759,6 +10235,7 @@ export default function App(): JSX.Element {
         }),
         { pushHistory: false }
       );
+      canvas.style.cursor = 'grabbing';
       updateOverview();
       return;
     }
@@ -9770,21 +10247,12 @@ export default function App(): JSX.Element {
       overviewViewRef.current.startY = event.clientY;
       overviewViewRef.current.panX += dx * (window.devicePixelRatio || 1);
       overviewViewRef.current.panY += dy * (window.devicePixelRatio || 1);
+      canvas.style.cursor = 'grabbing';
       updateOverview();
       return;
     }
 
     if (activeOverviewContourId) {
-      const rect = canvas.getBoundingClientRect();
-      const dpr = window.devicePixelRatio || 1;
-      const sx = (event.clientX - rect.left) * dpr;
-      const sy = (event.clientY - rect.top) * dpr;
-      const { baseScale, baseOffsetX, baseOffsetY } = overviewTransformRef.current;
-      const { zoom, panX, panY } = overviewViewRef.current;
-      const worldX = (sx - panX) / zoom;
-      const worldY = (sy - panY) / zoom;
-      const stageX = (worldX - baseOffsetX) / baseScale;
-      const stageY = (worldY - baseOffsetY) / baseScale;
       setOverviewContourPreview({ x: stageX, y: stageY });
       if (canvas.style.cursor !== 'crosshair') {
         canvas.style.cursor = 'crosshair';
@@ -9795,11 +10263,6 @@ export default function App(): JSX.Element {
       updateOverviewRef.current();
       return;
     }
-
-    const rect = canvas.getBoundingClientRect();
-    const dpr = window.devicePixelRatio || 1;
-    const x = (event.clientX - rect.left) * dpr;
-    const y = (event.clientY - rect.top) * dpr;
 
     if (overviewSelection.enabled) {
       let cursor = 'crosshair';
@@ -9831,8 +10294,6 @@ export default function App(): JSX.Element {
       if (canvas.style.cursor !== cursor) {
         canvas.style.cursor = cursor;
       }
-    } else if (canvas.style.cursor) {
-      canvas.style.cursor = '';
     }
     let closest: { id: string; dist: number } | null = null;
     for (const point of overviewPointsRef.current) {
@@ -9847,6 +10308,19 @@ export default function App(): JSX.Element {
     if (nextId !== overviewHoveredCutPointId) {
       setOverviewHoveredCutPointId(nextId);
     }
+    if (!overviewSelection.enabled) {
+      const rectStage = getOverviewLayerRect(activeOverviewLayer);
+      const inActiveImage = rectStage
+        ? stageX >= Math.min(rectStage.x, rectStage.x + rectStage.w) &&
+          stageX <= Math.max(rectStage.x, rectStage.x + rectStage.w) &&
+          stageY >= Math.min(rectStage.y, rectStage.y + rectStage.h) &&
+          stageY <= Math.max(rectStage.y, rectStage.y + rectStage.h)
+        : false;
+      const nextCursor = inActiveImage ? 'grab' : 'crosshair';
+      if (canvas.style.cursor !== nextCursor) {
+        canvas.style.cursor = nextCursor;
+      }
+    }
   };
 
   const handleOverviewPointerUp = (event: PointerEvent<HTMLCanvasElement>) => {
@@ -9860,6 +10334,26 @@ export default function App(): JSX.Element {
     overviewDragRef.current.isDragging = false;
     if (overviewViewRef.current.isDragging) {
       overviewViewRef.current.isDragging = false;
+    }
+    if (canvas) {
+      const rect = canvas.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      const x = (event.clientX - rect.left) * dpr;
+      const y = (event.clientY - rect.top) * dpr;
+      const { baseScale, baseOffsetX, baseOffsetY } = overviewTransformRef.current;
+      const { zoom, panX, panY } = overviewViewRef.current;
+      const worldX = (x - panX) / zoom;
+      const worldY = (y - panY) / zoom;
+      const stageX = (worldX - baseOffsetX) / baseScale;
+      const stageY = (worldY - baseOffsetY) / baseScale;
+      const rectStage = getOverviewLayerRect(activeOverviewLayer);
+      const inActiveImage = rectStage
+        ? stageX >= Math.min(rectStage.x, rectStage.x + rectStage.w) &&
+          stageX <= Math.max(rectStage.x, rectStage.x + rectStage.w) &&
+          stageY >= Math.min(rectStage.y, rectStage.y + rectStage.h) &&
+          stageY <= Math.max(rectStage.y, rectStage.y + rectStage.h)
+        : false;
+      canvas.style.cursor = inActiveImage ? 'grab' : 'crosshair';
     }
   };
 
@@ -10224,7 +10718,7 @@ export default function App(): JSX.Element {
               className={`tab-button ${activeTab === 'project' ? 'active' : ''}`}
               onClick={() => setActiveTab('project')}
             >
-              Project
+              Session
             </button>
             <button
               type="button"
@@ -10300,8 +10794,8 @@ export default function App(): JSX.Element {
             <aside className="sidebar project-sidebar">
               <div className="sidebar-header">
                 <div>
-                  <div className="app-title">Project</div>
-                  <div className="app-subtitle">Define the project scope</div>
+                  <div className="app-title">Session</div>
+                  <div className="app-subtitle">Define the session scope</div>
                 </div>
               </div>
               <div className="sidebar-status">
@@ -10310,7 +10804,7 @@ export default function App(): JSX.Element {
               </div>
             </aside>
             <div className="project-card">
-              <div className="plate-title">Project setup</div>
+              <div className="plate-title">Session setup</div>
               <div className="project-form project-form-wide">
                 <label className="form-field">
                   <div className="field-label-row">
@@ -12537,7 +13031,7 @@ export default function App(): JSX.Element {
             <main className="main">
               {!stagePosition ? (
                 <div className="main-alert error">
-                  Select a stage position in Project to align the overview image.
+                  Select a stage position in Session to align the overview image.
                 </div>
               ) : null}
               <section className="map" ref={overviewContainerRef} onWheel={handleOverviewWheel}>
@@ -12832,6 +13326,20 @@ export default function App(): JSX.Element {
                         </div>
                       ) : null}
                     </div>
+                  </div>
+                  <div className="button-row">
+                    <button
+                      className="secondary danger"
+                      onClick={() => setDetachCryoPromptOpen(true)}
+                      disabled={
+                        lifFiles.length === 0 &&
+                        csvFiles.length === 0 &&
+                        (elementsByCryo[activeCryosection]?.length ?? 0) === 0 &&
+                        (csvPlacementsByCryo[activeCryosection]?.length ?? 0) === 0
+                      }
+                    >
+                      Detach sources
+                    </button>
                   </div>
                 </div>
 
@@ -13309,7 +13817,7 @@ export default function App(): JSX.Element {
           <div className="modal-card">
             <div className="modal-title">Correct legacy collection values?</div>
             <div className="modal-text">
-              This project was saved with LMDmapper {legacyCollectionPrompt.version}, where
+              This session file was saved with LMDmapper {legacyCollectionPrompt.version}, where
               collection `Y` values were offset by +1.
             </div>
             <div className="modal-text">
@@ -13386,6 +13894,37 @@ export default function App(): JSX.Element {
                   Confirm coordinates
                 </button>
               ) : null}
+            </div>
+          </div>
+        </div>
+      )}
+      {detachCryoPromptOpen && (
+        <div className="modal-backdrop">
+          <div className="modal-card">
+            <div className="modal-title">Detach imported sources?</div>
+            <div className="modal-text">
+              This will remove the imported LIF files, CSV files, parsed image links, and cached
+              coordinates for{' '}
+              {getCryosectionName(activeCryosection) || `Cryosection ${activeCryosection + 1}`}.
+            </div>
+            <div className="modal-text">
+              Use this when a cryosection needs a clean reimport or a fresh `Reuse from` rebuild.
+            </div>
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => setDetachCryoPromptOpen(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="secondary danger"
+                onClick={handleDetachCoordinateSources}
+              >
+                Detach sources
+              </button>
             </div>
           </div>
         </div>

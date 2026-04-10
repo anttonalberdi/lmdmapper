@@ -3,9 +3,24 @@
 All notable changes to this project are documented in this file.
 
 ## [Unreleased]
-Target: 1.2.2
+Target: 1.2.4
 
-- Log all new changes here for the upcoming 1.2.2 release.
+- Log all new changes here for the upcoming 1.2.4 release.
+
+## [1.2.3] - 2026-04-10
+
+- Persist shared CSV source-group identities in saved sessions so reused cryosections continue to consume source columns `1–6`, then `7–12`, even after reopening a session and rebinding one cryosection to a different local file path.
+- Ignore suspicious CSV rows (non-`Ellipse` or zero-area) when reconstructing source columns, and warn when such rows are present or when the resolved source-column count does not match the current session layout.
+- Set the default `µm per pixel` value to `0.326137` so new sessions match the voxel size of `pre_wil` / `cut_wol` coordinate images more closely.
+- Rename user-facing `Project` wording to `Session` across the app, including setup labels, file dialogs, status messages, and menu actions.
+- Update Coordinates hover feedback so cut-point tooltips show microsample, plate, well, and coordinates, while the normal hover cursor shows live `X/Y` stage coordinates and the hand cursor is reserved for right-click panning.
+- Update Overview hover feedback so cut-point tooltips match the Coordinates layout and the hand cursor only appears when hovering the draggable overview image.
+
+## [1.2.2] - 2026-03-24
+
+- Shared CSV reuse across cryosections now consumes source columns in group order, so when two cryosections point to the same CSV/LIF set the later one uses the next source block (`1–6`, then `7–12`) instead of reloading the first half again; older shared-source projects now also attempt to repair those mappings on load and warn if the original CSV files cannot be reopened.
+- Coordinates now includes a `Detach sources` action per cryosection, clearing imported LIF/CSV files, parsed mappings, and cached coordinates so a shared-source cryosection can be reimported or rebuilt cleanly.
+- CSV plate building now resolves the source CSV columns first and only then maps them onto cryosection targets, fixing shared-source cases where the second cryosection was still replaying the first six source columns.
 
 ## [1.2.1] - 2026-03-24
 
@@ -25,29 +40,6 @@ Target: 1.2.2
 
 ## [1.1.5] - 2026-03-19
 
-- Saved `.lmd` files now record the app version dynamically from the build metadata instead of relying on a hardcoded renderer version string.
-- Collection `Y` values now use the corrected mapping (`X` → `y0`, `1 tick` → `y1`, `2 ticks` → `y2`, `3 ticks` → `y3`) for projects from `1.0.4` onward, and older `.lmd` files now prompt whether to correct the legacy offset or keep it as-is when loaded.
-- Collection CSV import now also accepts `LMBatch`, `PlatePosition`, `Size`, and `Notes Collection` as header synonyms for `Plate`, `Well`, `Area`, and `Collection`.
-- Project setup is now a flexible form-driven workflow that supports 1–4 cryosections, 1–2 plates, whole-plate or split-half assignment, per-segment positive/negative numbering, and cryosection stage positions without relying on the old fixed project-type presets.
-- Plate previews in Project now start neutral until assigned, the same cryosection can be mapped to multiple plate segments when needed, and downstream Design / Collection / Metadata / Coordinates views now follow the new plate-segment mapping model.
-- When a whole plate or half-plate is selected in Project, its cryosection and numbering controls now appear directly over the plate preview instead of below it.
-- The Project plate-assignment overlay now stacks `Cryosection`, `Positive`, and `Negative` on three separate rows for clearer editing.
-- The Project plate-assignment overlay is now sized and centered to the selected segment: centered over the full plate for whole-plate mode and centered within each half when the plate is split.
-- The main Project setup card now grows with its content instead of clipping or keeping a fixed stretched height.
-- Project cryosections now have editable colors, plate previews use those colors, and each selected plate segment now shows a centered summary badge with the cryosection name plus `Positive` / `Negative` start values that expands into the editor when clicked.
-- The blue active highlight on Project plate segments now follows the rounded outer plate corners correctly.
-- Positive numbering now defaults to session-wide sequential numbering per cryosection across assigned plate segments, while still remaining editable per segment when the user wants to override it.
-- Negative numbering now follows the same auto-sequential default per cryosection across assigned plate segments, while still allowing per-segment manual overrides.
-- Coordinates now uses a cryosection dropdown selector instead of relying on the old tab strip, so any configured cryosection can be selected directly.
-- The Coordinates cryosection selector now uses the app’s dark control styling instead of the browser default select appearance.
-- Overview now uses the same styled cryosection dropdown selector as Coordinates, so cryosections can be switched consistently in both views.
-- The cryosection dropdown popup in Coordinates and Overview now uses a black menu with the current selection highlighted in blue.
-- In Overview, the image-alignment values between the `-` and `+` buttons are now directly editable numeric fields instead of read-only text.
-- The Overview alignment number fields now hide the native up/down spinner arrows because the `-` and `+` controls already provide stepping.
-
-Target: 1.1.5
-
-- Log all new changes here for the upcoming 1.1.0 release.
 - Saved `.lmd` files now record the app version dynamically from the build metadata instead of relying on a hardcoded renderer version string.
 - Collection `Y` values now use the corrected mapping (`X` → `y0`, `1 tick` → `y1`, `2 ticks` → `y2`, `3 ticks` → `y3`) for projects from `1.0.4` onward, and older `.lmd` files now prompt whether to correct the legacy offset or keep it as-is when loaded.
 - Collection CSV import now also accepts `LMBatch`, `PlatePosition`, `Size`, and `Notes Collection` as header synonyms for `Plate`, `Well`, `Area`, and `Collection`.

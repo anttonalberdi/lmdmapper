@@ -170,7 +170,7 @@ function createWindow(): void {
       label: 'File',
       submenu: [
         {
-          label: 'New Project',
+          label: 'New Session',
           accelerator: 'CmdOrCtrl+N',
           click: () => {
             mainWindow?.webContents.send('lif:requestNewProject');
@@ -178,7 +178,7 @@ function createWindow(): void {
         },
         { type: 'separator' },
         {
-          label: 'Load Project',
+          label: 'Load Session',
           accelerator: 'CmdOrCtrl+O',
           click: () => {
             mainWindow?.webContents.send('lif:requestLoad');
@@ -283,7 +283,7 @@ const loadProjectFile = async (filePath: string): Promise<LmdLoadResponse> => {
     const data = JSON.parse(raw) as Record<string, unknown>;
     return { filePath, data };
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to load project.';
+    const message = error instanceof Error ? error.message : 'Failed to load session.';
     return { error: message };
   }
 };
@@ -436,10 +436,10 @@ ipcMain.handle(
 
     if (forceDialog || !filePath) {
       const result = await dialog.showSaveDialog({
-        title: 'Save LMDmapper project',
+        title: 'Save LMDmapper session',
         defaultPath: 'LMDmapper.lmd',
         filters: [
-          { name: 'LMDmapper Project', extensions: ['lmd'] },
+          { name: 'LMDmapper Session', extensions: ['lmd'] },
           { name: 'All Files', extensions: ['*'] }
         ]
       });
@@ -463,7 +463,7 @@ ipcMain.handle(
       await fs.writeFile(filePath, data, 'utf8');
       return { filePath };
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to save project.';
+      const message = error instanceof Error ? error.message : 'Failed to save session.';
       return { error: message };
     }
   }
@@ -503,10 +503,10 @@ ipcMain.handle(
 
 ipcMain.handle('lif:loadProject', async (): Promise<LmdLoadResponse> => {
   const result = await dialog.showOpenDialog({
-    title: 'Load LMDmapper project',
+    title: 'Load LMDmapper session',
     properties: ['openFile'],
     filters: [
-      { name: 'LMDmapper Project', extensions: ['lmd'] },
+      { name: 'LMDmapper Session', extensions: ['lmd'] },
       { name: 'All Files', extensions: ['*'] }
     ]
   });
@@ -522,7 +522,7 @@ ipcMain.handle('lif:loadProject', async (): Promise<LmdLoadResponse> => {
 ipcMain.handle('lif:loadProjectFromPath', async (_event, filePath: string): Promise<LmdLoadResponse> => {
   const normalizedPath = normalizeProjectPath(filePath);
   if (!normalizedPath) {
-    return { error: 'Invalid LMD project path.' };
+    return { error: 'Invalid LMD session path.' };
   }
   return loadProjectFile(normalizedPath);
 });
