@@ -79,6 +79,20 @@ type OrphanAssignmentPreviewState = {
   error?: string;
 };
 
+type CoordinateImagePoint = {
+  id: string;
+  elementId: string;
+  name: string;
+  sourceFile: string;
+  x: number;
+  y: number;
+  supported: boolean;
+  width?: number;
+  height?: number;
+  orphan: boolean;
+  sequence: number;
+};
+
 type ManualCoordinatePromptState = {
   x: number;
   y: number;
@@ -334,6 +348,43 @@ function closestDistanceToPolyline(
     }
   }
   return Number.isFinite(bestDistSq) ? Math.sqrt(bestDistSq) : undefined;
+}
+
+function closestPolylineSegmentIndex(
+  px: number,
+  py: number,
+  polyline: Array<{ x: number; y: number }>,
+  closed: boolean
+): { index: number; distance: number } | undefined {
+  if (polyline.length < 2) {
+    return undefined;
+  }
+  const points = closed ? [...polyline, polyline[0]] : polyline;
+  let best:
+    | {
+        index: number;
+        distance: number;
+      }
+    | undefined;
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const a = points[index];
+    const b = points[index + 1];
+    const abx = b.x - a.x;
+    const aby = b.y - a.y;
+    const apx = px - a.x;
+    const apy = py - a.y;
+    const denom = abx * abx + aby * aby;
+    const t = denom === 0 ? 0 : Math.max(0, Math.min(1, (apx * abx + apy * aby) / denom));
+    const cx = a.x + t * abx;
+    const cy = a.y + t * aby;
+    const dx = px - cx;
+    const dy = py - cy;
+    const distance = Math.sqrt(dx * dx + dy * dy);
+    if (!best || distance < best.distance) {
+      best = { index, distance };
+    }
+  }
+  return best;
 }
 
 type ElementGroup = 'pre' | 'post' | 'other';
@@ -685,6 +736,22 @@ const getDefaultViewerBounds = (
 
 const getDefaultCryosectionColor = (index: number) =>
   PROJECT_CRYO_COLORS[index % PROJECT_CRYO_COLORS.length];
+
+const expandStageBounds = (
+  bounds: { minX: number; maxX: number; minY: number; maxY: number },
+  minimumSpan = 1000
+) => {
+  const centerX = (bounds.minX + bounds.maxX) / 2;
+  const centerY = (bounds.minY + bounds.maxY) / 2;
+  const spanX = Math.max(bounds.maxX - bounds.minX, minimumSpan);
+  const spanY = Math.max(bounds.maxY - bounds.minY, minimumSpan);
+  return {
+    minX: centerX - spanX / 2,
+    maxX: centerX + spanX / 2,
+    minY: centerY - spanY / 2,
+    maxY: centerY + spanY / 2
+  };
+};
 
 const normalizeCryosectionColor = (value: unknown, index: number) => {
   const color = typeof value === 'string' ? value.trim() : '';
@@ -2023,6 +2090,29 @@ const parseImageNames = (value: string | undefined): { preImage?: string; cutIma
 const joinImageNames = (preImage?: string, cutImage?: string): string =>
   [preImage, cutImage].filter((value): value is string => Boolean(value && value.trim())).join(', ');
 
+const getCsvLinkedImageNames = (cell: Pick<CsvCell, 'preImage' | 'cutImage'>) => {
+  const seen = new Set<string>();
+  const names: string[] = [];
+  for (const raw of [cell.preImage, cell.cutImage]) {
+    const name = raw?.trim();
+    if (!name) {
+      continue;
+    }
+    const normalized = normalizeImageName(name);
+    if (seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    names.push(name);
+  }
+  return names;
+};
+
+const isSingleLinkedImageCsvCell = (cell: Pick<CsvCell, 'preImage' | 'cutImage' | 'images' | 'manualAssigned'>) =>
+  cell.manualAssigned !== true &&
+  !isManualCoordinateLabel(cell.images) &&
+  getCsvLinkedImageNames(cell).length === 1;
+
 const hasCsvCellData = (cell: CsvCell): boolean =>
   cell.size !== undefined ||
   !!cell.images ||
@@ -2047,6 +2137,24 @@ const extractImageSequence = (value: string | undefined): number | undefined => 
   }
   const parsed = Number.parseInt(match[1], 10);
   return Number.isFinite(parsed) ? parsed : undefined;
+};
+
+const getCsvCellImageSequenceRange = (
+  cell: Pick<CsvCell, 'preImage' | 'cutImage' | 'images' | 'manualAssigned'>
+): { min: number; max: number } | null => {
+  if (isSingleLinkedImageCsvCell(cell) || cell.manualAssigned === true || isManualCoordinateLabel(cell.images)) {
+    return null;
+  }
+  const sequences = [extractImageSequence(cell.preImage), extractImageSequence(cell.cutImage)].filter(
+    (value): value is number => value !== undefined
+  );
+  if (sequences.length === 0) {
+    return null;
+  }
+  return {
+    min: Math.min(...sequences),
+    max: Math.max(...sequences)
+  };
 };
 
 const normalizeImageName = (value: string | undefined): string => {
@@ -2236,6 +2344,9 @@ export default function App(): JSX.Element {
     segmentIndex: 0 | 1;
   } | null>({ plateIndex: 0, segmentIndex: 0 });
   const [activeCryosection, setActiveCryosection] = useState(0);
+  const [coordinateFrameMode, setCoordinateFrameMode] = useState<'images' | 'cut-points'>(
+    'images'
+  );
   const [lifFilesByCryo, setLifFilesByCryo] = useState<string[][]>(() =>
     createCryoStateArray(() => [])
   );
@@ -2371,6 +2482,7 @@ export default function App(): JSX.Element {
   const [selectedOrphanAssignmentImageKeys, setSelectedOrphanAssignmentImageKeys] = useState<
     string[]
   >([]);
+  const [showAllOrphanAssignmentImages, setShowAllOrphanAssignmentImages] = useState(false);
   const [orphanAssignmentPreviewState, setOrphanAssignmentPreviewState] = useState<
     Record<string, OrphanAssignmentPreviewState>
   >({});
@@ -2440,6 +2552,15 @@ export default function App(): JSX.Element {
   );
   const [activeOverviewContourByCryo, setActiveOverviewContourByCryo] = useState<
     Array<string | null>
+  >(() => createCryoStateArray(() => null));
+  const [activeOverviewContourAnchorByCryo, setActiveOverviewContourAnchorByCryo] = useState<
+    Array<{ contourId: string; pointIndex: number } | null>
+  >(() => createCryoStateArray(() => null));
+  const [hoveredOverviewContourAnchorByCryo, setHoveredOverviewContourAnchorByCryo] = useState<
+    Array<{ contourId: string; pointIndex: number } | null>
+  >(() => createCryoStateArray(() => null));
+  const [overviewContourInsertPreviewByCryo, setOverviewContourInsertPreviewByCryo] = useState<
+    Array<{ contourId: string; pointIndex: number; x: number; y: number } | null>
   >(() => createCryoStateArray(() => null));
   const [overviewContourPreviewByCryo, setOverviewContourPreviewByCryo] = useState<
     Array<{ x: number; y: number } | null>
@@ -2747,6 +2868,29 @@ export default function App(): JSX.Element {
     },
     [csvFilesByCryo, csvSourceGroupIdsByCryo, plateAssignments, plateCount]
   );
+  const getCryoSourceSlotForPlateCell = useCallback(
+    (cryoIndex: number, plateIndex: number, rowIndex: number, colIndex: number) => {
+      const { targets } = getCryoCsvTargets(cryoIndex);
+      const target = targets.find(
+        (item) =>
+          item.plateIndex === plateIndex &&
+          colIndex >= item.startCol &&
+          colIndex <= item.endCol
+      );
+      if (!target) {
+        return undefined;
+      }
+      const sourceCol = target.sourceStartCol + (colIndex - target.startCol);
+      if (!Number.isFinite(sourceCol) || sourceCol < 0 || sourceCol >= PLATE_COLS.length) {
+        return undefined;
+      }
+      return {
+        sourceCol,
+        slot: sourceCol * PLATE_ROWS.length + rowIndex
+      };
+    },
+    [getCryoCsvTargets]
+  );
   const effectivePositiveStarts = useMemo(() => {
     const nextByCryo = Array.from({ length: MAX_CRYOSECTIONS }, () => DEFAULT_MICROSAMPLE_START);
     return Array.from({ length: MAX_PLATES }, (_, plateIndex) => {
@@ -2912,6 +3056,12 @@ export default function App(): JSX.Element {
   const overviewContours =
     overviewContoursByCryo[activeCryosection] ?? EMPTY_OVERVIEW_CONTOURS;
   const activeOverviewContourId = activeOverviewContourByCryo[activeCryosection] ?? null;
+  const activeOverviewContourAnchor =
+    activeOverviewContourAnchorByCryo[activeCryosection] ?? null;
+  const hoveredOverviewContourAnchor =
+    hoveredOverviewContourAnchorByCryo[activeCryosection] ?? null;
+  const overviewContourInsertPreview =
+    overviewContourInsertPreviewByCryo[activeCryosection] ?? null;
   const overviewContourPreview = overviewContourPreviewByCryo[activeCryosection] ?? null;
   const overviewExport = overviewExportByCryo[activeCryosection] ?? null;
 
@@ -2924,6 +3074,27 @@ export default function App(): JSX.Element {
     }
     setOverviewAlignmentImportSource(overviewAlignmentImportOptions[0] ?? null);
   }, [overviewAlignmentImportOptions, overviewAlignmentImportSource]);
+
+  useEffect(() => {
+    if (
+      activeOverviewContourAnchor &&
+      (!activeOverviewContourId ||
+        activeOverviewContourAnchor.contourId !== activeOverviewContourId ||
+        !overviewContours.some(
+          (contour) =>
+            contour.id === activeOverviewContourAnchor.contourId &&
+            activeOverviewContourAnchor.pointIndex >= 0 &&
+            activeOverviewContourAnchor.pointIndex < contour.points.length
+        ))
+    ) {
+      setActiveOverviewContourAnchorByCryo((prev) => replaceAt(prev, activeCryosection, null));
+    }
+  }, [
+    activeCryosection,
+    activeOverviewContourAnchor,
+    activeOverviewContourId,
+    overviewContours
+  ]);
 
   useEffect(() => {
     setOverviewAlignmentDrafts((prev) => ({
@@ -3046,6 +3217,9 @@ export default function App(): JSX.Element {
   const overviewPointsRef = useRef<Array<{ id: string; x: number; y: number; w: number; h: number }>>(
     []
   );
+  const overviewContourAnchorsRef = useRef<
+    Array<{ contourId: string; pointIndex: number; x: number; y: number }>
+  >([]);
   const mapViewRef = useRef({
     zoom: 1,
     panX: 0,
@@ -3124,6 +3298,11 @@ export default function App(): JSX.Element {
     startStageY: 0,
     startOffsetX: 0,
     startOffsetY: 0
+  });
+  const overviewContourDragRef = useRef({
+    active: false,
+    contourId: null as string | null,
+    pointIndex: -1
   });
   const overviewSelectionRef = useRef({
     isSelecting: false,
@@ -3865,11 +4044,15 @@ export default function App(): JSX.Element {
             .split(/[,;]+/)
             .map((value) => value.trim())
             .filter(Boolean);
-          const referenceImage = cell.preImage?.trim() || cell.cutImage?.trim();
+          const singleLinkedImage = isSingleLinkedImageCsvCell(cell);
+          const referenceImage = singleLinkedImage
+            ? undefined
+            : cell.preImage?.trim() || cell.cutImage?.trim();
           const isManualCoordinateOnly =
             cell.manualAssigned === true &&
             !referenceImage &&
             isManualCoordinateLabel(cell.images);
+          const allowCachedCoordinates = !singleLinkedImage || isManualCoordinateOnly;
           if (!referenceImage && !isManualCoordinateOnly) {
             continue;
           }
@@ -3900,13 +4083,13 @@ export default function App(): JSX.Element {
           }
           let x: number | undefined;
           let y: number | undefined;
-          if (hasOverride && cached) {
+          if (allowCachedCoordinates && hasOverride && cached) {
             x = cached.x;
             y = cached.y;
           } else if (Number.isFinite(computedX) && Number.isFinite(computedY)) {
             x = computedX;
             y = computedY;
-          } else if (cached) {
+          } else if (allowCachedCoordinates && cached) {
             x = cached.x;
             y = cached.y;
           }
@@ -3993,6 +4176,11 @@ export default function App(): JSX.Element {
     return { visiblePoints, visibleImageIds, allImageIds };
   }, [filteredCutPoints, cutPointVisibility]);
 
+  const visibleCoordinateCutPoints = useMemo(
+    () => (coordinatesReady && showCutPoints ? cutPointDisplay.visiblePoints : []),
+    [coordinatesReady, cutPointDisplay.visiblePoints, showCutPoints]
+  );
+
   const overviewCutPoints = useMemo(() => {
     let points = cutPointDisplay.visiblePoints;
     if (selectedCutIds.size > 0) {
@@ -4032,6 +4220,9 @@ export default function App(): JSX.Element {
         for (const row of plate) {
           for (const cell of row) {
             if (!cell?.present) {
+              continue;
+            }
+            if (isSingleLinkedImageCsvCell(cell)) {
               continue;
             }
             for (const name of [cell.preImage, cell.cutImage]) {
@@ -4124,6 +4315,70 @@ export default function App(): JSX.Element {
   ]);
   const coordinateOrphansEnabled =
     showCoordinateOrphanPreImages || showCoordinateOrphanPostImages;
+
+  const coordinateVisibleImagePoints = useMemo<CoordinateImagePoint[]>(() => {
+    if (!hasCoordinateInputs) {
+      return [];
+    }
+    const visibleImageIds = new Set(cutPointDisplay.visibleImageIds);
+    const allImageIds = new Set(cutPointDisplay.allImageIds);
+    if (coordinateOrphansEnabled) {
+      for (const row of orphanImageRows) {
+        if (!row.visible) {
+          continue;
+        }
+        allImageIds.add(row.id);
+        visibleImageIds.add(row.id);
+      }
+    }
+
+    const filterByCutImages = allImageIds.size > 0;
+    return mapElements
+      .filter((item) => item.stageX !== undefined && item.stageY !== undefined)
+      .filter((item) => {
+        const isOrphan = orphanImageIds.has(item.uiId);
+        if (isOrphan) {
+          return visibleImageIds.has(item.uiId);
+        }
+        const group = classifyElementName(item.name);
+        if (group === 'pre' && !filterPre) {
+          return false;
+        }
+        if (group === 'post' && !filterPost) {
+          return false;
+        }
+        if (!filterByCutImages) {
+          return true;
+        }
+        return allImageIds.has(item.uiId) && visibleImageIds.has(item.uiId);
+      })
+      .map((item) => ({
+        id: item.uiId,
+        elementId: item.id,
+        name: item.name,
+        sourceFile: item.sourceFile,
+        x: item.stageX as number,
+        y: item.stageY as number,
+        supported: item.supported,
+        width: item.width,
+        height: item.height,
+        orphan: orphanImageIds.has(item.uiId),
+        sequence: extractImageSequence(item.name) ?? Number.MIN_SAFE_INTEGER
+      }))
+      .sort((a, b) =>
+        a.sequence !== b.sequence ? a.sequence - b.sequence : a.name.localeCompare(b.name)
+      );
+  }, [
+    coordinateOrphansEnabled,
+    cutPointDisplay.allImageIds,
+    cutPointDisplay.visibleImageIds,
+    filterPost,
+    filterPre,
+    hasCoordinateInputs,
+    mapElements,
+    orphanImageIds,
+    orphanImageRows
+  ]);
 
   const orphanAssignmentImagesById = useMemo(() => {
     const result = new Map<
@@ -4222,6 +4477,7 @@ export default function App(): JSX.Element {
                 )}`;
           const csvCell = mergedCsvPlates[plateIndex]?.[rowIndex]?.[colIndex] ?? {};
           const cryoIndex = csvCell.cryoIndex ?? getCellCryoIndex(plateIndex, colIndex) ?? 0;
+          const singleLinkedImage = isSingleLinkedImageCsvCell(csvCell);
           const manualAssigned =
             csvCell.manualAssigned === true ||
             (isManualCoordinateLabel(csvCell.images) &&
@@ -4235,7 +4491,9 @@ export default function App(): JSX.Element {
                 (manualAssigned ? MANUAL_COORDINATE_LABEL : csvCell.images || '')
               : '';
           const size = isDisabledSample ? undefined : cellHasData ? csvCell.size : undefined;
-          const referenceImageName = csvCell.preImage?.trim() || csvCell.cutImage?.trim();
+          const referenceImageName = singleLinkedImage
+            ? undefined
+            : csvCell.preImage?.trim() || csvCell.cutImage?.trim();
           const element =
             !isDisabledSample && coordinatesReady && csvCell.present && referenceImageName
               ? resolveElementForImages(cryoIndex, csvCell.preImage, csvCell.cutImage).element
@@ -4246,6 +4504,7 @@ export default function App(): JSX.Element {
           const hasOverride = coordOverrides[cacheKey] === true;
           let computedX: number | undefined;
           let computedY: number | undefined;
+          const allowCachedCoordinates = !singleLinkedImage || manualAssigned;
           if (
             !isDisabledSample &&
             coordinatesReady &&
@@ -4267,13 +4526,13 @@ export default function App(): JSX.Element {
           if (isDisabledSample) {
             xCoord = undefined;
             yCoord = undefined;
-          } else if (hasOverride && cached) {
+          } else if (allowCachedCoordinates && hasOverride && cached) {
             xCoord = cached.x;
             yCoord = cached.y;
           } else if (Number.isFinite(computedX) && Number.isFinite(computedY)) {
             xCoord = computedX;
             yCoord = computedY;
-          } else if (cached) {
+          } else if (allowCachedCoordinates && cached) {
             xCoord = cached.x;
             yCoord = cached.y;
           }
@@ -4928,15 +5187,18 @@ export default function App(): JSX.Element {
     if (!orphanAssignmentPrompt) {
       setSelectedOrphanAssignmentTargetKey(null);
       setSelectedOrphanAssignmentImageKeys([]);
+      setShowAllOrphanAssignmentImages(false);
       setOrphanAssignmentPreviewState({});
       return;
     }
     setSelectedOrphanAssignmentTargetKey(orphanAssignmentPrompt.initialTargetKey ?? null);
     setSelectedOrphanAssignmentImageKeys([]);
+    setShowAllOrphanAssignmentImages(false);
   }, [orphanAssignmentPrompt]);
 
   useEffect(() => {
     setSelectedOrphanAssignmentImageKeys([]);
+    setShowAllOrphanAssignmentImages(false);
   }, [selectedOrphanAssignmentTargetKey]);
 
   const openOrphanAssignmentPrompt = useCallback(
@@ -5016,6 +5278,96 @@ export default function App(): JSX.Element {
       ) ?? null
     );
   }, [orphanAssignmentPrompt, selectedOrphanAssignmentTargetKey]);
+
+  const orphanAssignmentExpectedImageRange = useMemo(() => {
+    if (!orphanAssignmentPrompt || !selectedOrphanAssignmentTarget) {
+      return null;
+    }
+    const targetSourceInfo = getCryoSourceSlotForPlateCell(
+      activeCryosection,
+      selectedOrphanAssignmentTarget.plateIndex,
+      selectedOrphanAssignmentTarget.rowIndex,
+      selectedOrphanAssignmentTarget.colIndex
+    );
+    if (!targetSourceInfo) {
+      return null;
+    }
+    const anchors: Array<{ sourceCol: number; min: number; max: number }> = [];
+    const plates = csvPlatesByCryo[activeCryosection] ?? [];
+    for (let plateIndex = 0; plateIndex < plates.length; plateIndex += 1) {
+      const plate = plates[plateIndex];
+      for (let rowIndex = 0; rowIndex < plate.length; rowIndex += 1) {
+        const row = plate[rowIndex];
+        for (let colIndex = 0; colIndex < row.length; colIndex += 1) {
+          if (
+            plateIndex === selectedOrphanAssignmentTarget.plateIndex &&
+            rowIndex === selectedOrphanAssignmentTarget.rowIndex &&
+            colIndex === selectedOrphanAssignmentTarget.colIndex
+          ) {
+            continue;
+          }
+          const sourceInfo = getCryoSourceSlotForPlateCell(
+            activeCryosection,
+            plateIndex,
+            rowIndex,
+            colIndex
+          );
+          if (!sourceInfo) {
+            continue;
+          }
+          const sequenceRange = getCsvCellImageSequenceRange(row[colIndex] ?? {});
+          if (!sequenceRange) {
+            continue;
+          }
+          anchors.push({
+            sourceCol: sourceInfo.sourceCol,
+            min: sequenceRange.min,
+            max: sequenceRange.max
+          });
+        }
+      }
+    }
+    const previousColumn = targetSourceInfo.sourceCol - 1;
+    const nextColumn = targetSourceInfo.sourceCol + 1;
+    const previousAnchors = anchors.filter((anchor) => anchor.sourceCol === previousColumn);
+    const nextAnchors = anchors.filter((anchor) => anchor.sourceCol === nextColumn);
+    const previousMax =
+      previousAnchors.length > 0 ? Math.max(...previousAnchors.map((anchor) => anchor.max)) : undefined;
+    const nextMin =
+      nextAnchors.length > 0 ? Math.min(...nextAnchors.map((anchor) => anchor.min)) : undefined;
+    if (previousMax === undefined && nextMin === undefined) {
+      return null;
+    }
+    return { previousMax, nextMin };
+  }, [
+    activeCryosection,
+    csvPlatesByCryo,
+    getCryoSourceSlotForPlateCell,
+    orphanAssignmentPrompt,
+    selectedOrphanAssignmentTarget
+  ]);
+
+  const visibleOrphanAssignmentImageOptions = useMemo(() => {
+    const allOptions = orphanAssignmentPrompt?.imageOptions ?? [];
+    if (showAllOrphanAssignmentImages || !orphanAssignmentExpectedImageRange) {
+      return allOptions;
+    }
+    const { previousMax, nextMin } = orphanAssignmentExpectedImageRange;
+    return allOptions.filter((option) => {
+      if (previousMax !== undefined && option.sequence <= previousMax) {
+        return false;
+      }
+      if (nextMin !== undefined && option.sequence >= nextMin) {
+        return false;
+      }
+      return true;
+    });
+  }, [orphanAssignmentExpectedImageRange, orphanAssignmentPrompt, showAllOrphanAssignmentImages]);
+
+  const orphanAssignmentHiddenImageCount = useMemo(() => {
+    const total = orphanAssignmentPrompt?.imageOptions.length ?? 0;
+    return Math.max(0, total - visibleOrphanAssignmentImageOptions.length);
+  }, [orphanAssignmentPrompt, visibleOrphanAssignmentImageOptions.length]);
 
   const selectedManualCoordinateTarget = useMemo(() => {
     if (!manualCoordinatePrompt || !selectedManualCoordinateTargetKey) {
@@ -5532,47 +5884,19 @@ export default function App(): JSX.Element {
   };
 
   const controlCoordinateIssues = useMemo(() => {
-    const plates = mergedCsvPlates;
-    let count = 0;
-    for (let plateIndex = 0; plateIndex < plates.length; plateIndex += 1) {
-      for (let rowIndex = 0; rowIndex < PLATE_ROWS.length; rowIndex += 1) {
-        for (let colIndex = 0; colIndex < PLATE_COLS.length; colIndex += 1) {
-          const sample = designPlates[plateIndex]?.cells[rowIndex]?.[colIndex] ?? DEFAULT_SAMPLE;
-          if (sample !== 'Z' && sample !== 'R') {
-            continue;
-          }
-          const cell = plates[plateIndex]?.[rowIndex]?.[colIndex];
-          const hasPixel =
-            cell?.pixelX !== undefined && cell?.pixelY !== undefined && cell.present;
-          const cacheKey = `${plateIndex}-${rowIndex}-${colIndex}`;
-          const hasCoord = coordinateCache[cacheKey] !== undefined;
-          if (hasPixel || hasCoord) {
-            count += 1;
-          }
-        }
-      }
-    }
-    return count;
-  }, [mergedCsvPlates, designPlates, coordinateCache]);
+    return metadataRows.filter(
+      (row) =>
+        (row.sample === 'Z' || row.sample === 'R') &&
+        row.xCoord !== undefined &&
+        row.yCoord !== undefined
+    ).length;
+  }, [metadataRows]);
 
   const positiveMissingCoordinates = useMemo(() => {
-    let count = 0;
-    for (let plateIndex = 0; plateIndex < visiblePlateCount; plateIndex += 1) {
-      for (let rowIndex = 0; rowIndex < PLATE_ROWS.length; rowIndex += 1) {
-        for (let colIndex = 0; colIndex < PLATE_COLS.length; colIndex += 1) {
-          const sample = designPlates[plateIndex]?.cells[rowIndex]?.[colIndex] ?? DEFAULT_SAMPLE;
-          if (sample !== 'P') {
-            continue;
-          }
-          const cacheKey = `${plateIndex}-${rowIndex}-${colIndex}`;
-          if (coordinateCache[cacheKey] === undefined) {
-            count += 1;
-          }
-        }
-      }
-    }
-    return count;
-  }, [designPlates, coordinateCache, visiblePlateCount]);
+    return metadataRows.filter(
+      (row) => row.sample === 'P' && (row.xCoord === undefined || row.yCoord === undefined)
+    ).length;
+  }, [metadataRows]);
 
   const guessImageMime = (filePath: string): string => {
     const ext = filePath.split('.').pop()?.toLowerCase();
@@ -5607,13 +5931,13 @@ export default function App(): JSX.Element {
     }
   };
 
-  const pushOverviewHistory = (state: OverviewState) => {
+  const pushOverviewHistory = useCallback((state: OverviewState) => {
     const history = overviewHistoryRef.current[activeCryosection];
     history.push(snapshotOverviewState(state));
     if (history.length > 100) {
       history.shift();
     }
-  };
+  }, [activeCryosection]);
 
   const setOverviewState = (
     updater: (state: OverviewState) => OverviewState,
@@ -5769,7 +6093,7 @@ export default function App(): JSX.Element {
     });
   };
 
-  const updateOverviewContours = (
+  const updateOverviewContours = useCallback((
     updater: (contours: OverviewContour[]) => OverviewContour[]
   ) => {
     setOverviewContoursByCryo((prev) => {
@@ -5778,15 +6102,33 @@ export default function App(): JSX.Element {
       next[activeCryosection] = updater(current.map((contour) => ({ ...contour, points: [...contour.points] })));
       return next;
     });
-  };
+  }, [activeCryosection]);
 
-  const setActiveOverviewContour = (contourId: string | null) => {
+  const setActiveOverviewContour = useCallback((contourId: string | null) => {
     setActiveOverviewContourByCryo((prev) => replaceAt(prev, activeCryosection, contourId));
-  };
+  }, [activeCryosection]);
 
-  const setOverviewContourPreview = (point: { x: number; y: number } | null) => {
+  const setActiveOverviewContourAnchor = useCallback((
+    anchor: { contourId: string; pointIndex: number } | null
+  ) => {
+    setActiveOverviewContourAnchorByCryo((prev) => replaceAt(prev, activeCryosection, anchor));
+  }, [activeCryosection]);
+
+  const setHoveredOverviewContourAnchor = useCallback((
+    anchor: { contourId: string; pointIndex: number } | null
+  ) => {
+    setHoveredOverviewContourAnchorByCryo((prev) => replaceAt(prev, activeCryosection, anchor));
+  }, [activeCryosection]);
+
+  const setOverviewContourInsertPreview = useCallback((
+    preview: { contourId: string; pointIndex: number; x: number; y: number } | null
+  ) => {
+    setOverviewContourInsertPreviewByCryo((prev) => replaceAt(prev, activeCryosection, preview));
+  }, [activeCryosection]);
+
+  const setOverviewContourPreview = useCallback((point: { x: number; y: number } | null) => {
     setOverviewContourPreviewByCryo((prev) => replaceAt(prev, activeCryosection, point));
-  };
+  }, [activeCryosection]);
 
   const startOverviewContour = () => {
     if (overviewSelection.enabled) {
@@ -5804,6 +6146,9 @@ export default function App(): JSX.Element {
     };
     updateOverviewContours((contours) => [...contours, contour]);
     setActiveOverviewContour(contour.id);
+    setActiveOverviewContourAnchor(null);
+    setHoveredOverviewContourAnchor(null);
+    setOverviewContourInsertPreview(null);
     setOverviewContourPreview(null);
   };
 
@@ -5815,6 +6160,9 @@ export default function App(): JSX.Element {
       contours.filter((contour) => contour.id !== activeOverviewContourId || contour.points.length >= 2)
     );
     setActiveOverviewContour(null);
+    setActiveOverviewContourAnchor(null);
+    setHoveredOverviewContourAnchor(null);
+    setOverviewContourInsertPreview(null);
     setOverviewContourPreview(null);
     updateOverviewRef.current();
   };
@@ -5823,6 +6171,9 @@ export default function App(): JSX.Element {
     updateOverviewContours((contours) => contours.filter((contour) => contour.id !== contourId));
     if (activeOverviewContourId === contourId) {
       setActiveOverviewContour(null);
+      setActiveOverviewContourAnchor(null);
+      setHoveredOverviewContourAnchor(null);
+      setOverviewContourInsertPreview(null);
       setOverviewContourPreview(null);
     }
   };
@@ -6096,13 +6447,55 @@ export default function App(): JSX.Element {
       setStatus('Export not available.');
       return;
     }
-    const result = buildOverviewCrop();
-    if (!result) {
+    if (!overviewSelection.rect) {
+      setErrorBanner('Draw a selection rectangle before exporting a crop.');
       return;
     }
+    const rect = normalizeRect(overviewSelection.rect);
+    if (rect.w <= 0 || rect.h <= 0) {
+      setErrorBanner('Selection rectangle has zero size.');
+      return;
+    }
+    const visibleLayers = ([
+      overview.showPre ? { key: 'pre' as const, state: overview.pre } : null,
+      overview.showPost ? { key: 'post' as const, state: overview.post } : null
+    ].filter((value): value is { key: 'pre' | 'post'; state: OverviewLayerState } => Boolean(value)))
+      .map((entry) => {
+        const layerRect = getOverviewLayerRect(entry.state);
+        return layerRect && entry.state.bitmap
+          ? { ...entry, layerRect, bitmap: entry.state.bitmap }
+          : null;
+      })
+      .filter(
+        (
+          value
+        ): value is {
+          key: 'pre' | 'post';
+          state: OverviewLayerState;
+          layerRect: NonNullable<ReturnType<typeof getOverviewLayerRect>>;
+          bitmap: ImageBitmap;
+        } => Boolean(value)
+      );
+    if (visibleLayers.length === 0) {
+      setErrorBanner('Show at least one loaded overview image before exporting a crop.');
+      return;
+    }
+    setErrorBanner(null);
+    const referenceLayer =
+      visibleLayers.find((entry) => entry.key === overview.activeLayer) ?? visibleLayers[0];
+    const imgW = referenceLayer.bitmap.width;
+    const imgH = referenceLayer.bitmap.height;
+    const cropX = ((rect.x - referenceLayer.layerRect.x) / referenceLayer.layerRect.w) * imgW;
+    const cropY = ((rect.y - referenceLayer.layerRect.y) / referenceLayer.layerRect.h) * imgH;
+    const cropW = (rect.w / referenceLayer.layerRect.w) * imgW;
+    const cropH = (rect.h / referenceLayer.layerRect.h) * imgH;
+    const clampedX = Math.max(0, cropX);
+    const clampedY = Math.max(0, cropY);
+    const clampedW = Math.max(1, Math.min(cropW, imgW - clampedX));
+    const clampedH = Math.max(1, Math.min(cropH, imgH - clampedY));
     const cryoName = getCryosectionName(activeCryosection);
     const baseName = safeFilename(cryoName || '', `Cryosection${activeCryosection + 1}`);
-    const targetSize = overviewExport ?? result.rectPx;
+    const targetSize = overviewExport ?? { w: clampedW, h: clampedH };
     const width = Math.max(1, Math.round(targetSize.w));
     const height = Math.max(1, Math.round(targetSize.h));
     const canvas = document.createElement('canvas');
@@ -6113,17 +6506,43 @@ export default function App(): JSX.Element {
       setStatus('Failed to prepare export canvas.');
       return;
     }
-    ctx.drawImage(
-      result.bitmap,
-      result.sourceRectPx.x,
-      result.sourceRectPx.y,
-      result.sourceRectPx.w,
-      result.sourceRectPx.h,
-      0,
-      0,
-      width,
-      height
-    );
+    ctx.clearRect(0, 0, width, height);
+    for (const layer of visibleLayers) {
+      const layerLeft = Math.min(layer.layerRect.x, layer.layerRect.x + layer.layerRect.w);
+      const layerRight = Math.max(layer.layerRect.x, layer.layerRect.x + layer.layerRect.w);
+      const layerTop = Math.min(layer.layerRect.y, layer.layerRect.y + layer.layerRect.h);
+      const layerBottom = Math.max(layer.layerRect.y, layer.layerRect.y + layer.layerRect.h);
+      const interLeft = Math.max(rect.x, layerLeft);
+      const interRight = Math.min(rect.x + rect.w, layerRight);
+      const interTop = Math.max(rect.y, layerTop);
+      const interBottom = Math.min(rect.y + rect.h, layerBottom);
+      if (interRight <= interLeft || interBottom <= interTop) {
+        continue;
+      }
+      const sourceX =
+        ((interLeft - layer.layerRect.x) / layer.layerRect.w) * layer.bitmap.width;
+      const sourceY =
+        ((interTop - layer.layerRect.y) / layer.layerRect.h) * layer.bitmap.height;
+      const sourceW =
+        ((interRight - interLeft) / layer.layerRect.w) * layer.bitmap.width;
+      const sourceH =
+        ((interBottom - interTop) / layer.layerRect.h) * layer.bitmap.height;
+      const destX = ((interLeft - rect.x) / rect.w) * width;
+      const destY = ((interTop - rect.y) / rect.h) * height;
+      const destW = ((interRight - interLeft) / rect.w) * width;
+      const destH = ((interBottom - interTop) / rect.h) * height;
+      ctx.drawImage(
+        layer.bitmap,
+        sourceX,
+        sourceY,
+        sourceW,
+        sourceH,
+        destX,
+        destY,
+        destW,
+        destH
+      );
+    }
     const dataUrl = canvas.toDataURL('image/png');
     const base64 = dataUrl.split(',')[1] ?? '';
     const response = await window.lifApi.exportFile({
@@ -6551,6 +6970,7 @@ export default function App(): JSX.Element {
       sustainabilityMode: true
     });
     setActiveCryosection(0);
+    setCoordinateFrameMode('images');
     setLifFilesByCryo(createCryoStateArray(() => []));
     setCsvFilesByCryo(createCryoStateArray(() => []));
     setCsvSourceGroupIdsByCryo(createCryoStateArray(() => null));
@@ -6749,6 +7169,7 @@ export default function App(): JSX.Element {
     setCryosections(nextCryosections);
     setPlateCount(nextPlateCount);
     setActiveCryosection(0);
+    setCoordinateFrameMode('images');
 
     const cryoRecords = Array.isArray(record.cryosectionData)
       ? record.cryosectionData
@@ -7379,7 +7800,7 @@ export default function App(): JSX.Element {
     }
   };
 
-  const handleConfirmClosePrompt = async () => {
+  const handleConfirmClosePrompt = () => {
     const endTime = new Date().toISOString();
     const nextSessions = sessions.map((session) =>
       session.id === currentSessionId && !session.endTime
@@ -7387,35 +7808,6 @@ export default function App(): JSX.Element {
         : session
     );
     setSessions(nextSessions);
-
-    if (lastSavedPath && window.lifApi?.saveProject) {
-      const basePayload = buildBasePayload(nextSessions);
-      const activeSessionUsers =
-        nextSessions.find((session) => session.id === currentSessionId)?.users ??
-        selectedSessionUsers;
-      const historyEntry = createHistoryEntry(
-        basePayload,
-        endTime,
-        activeSessionUsers.length ? formatSessionUsers(activeSessionUsers) : undefined,
-        currentSessionId || undefined
-      );
-      const nextHistory = appendHistoryEntry(projectHistory, historyEntry);
-      const payload = {
-        ...buildSavePayload(nextSessions, nextHistory),
-        savedAt: endTime
-      };
-      const response: LmdSaveResponse = await window.lifApi.saveProject({
-        payload,
-        filePath: lastSavedPath
-      });
-      if ('error' in response) {
-        setStatus(response.error);
-        return;
-      }
-      setProjectHistory(nextHistory);
-      setLastSavedSnapshot(JSON.stringify(basePayload));
-      setHasUnsavedChanges(false);
-    }
 
     setClosePromptOpen(false);
     window.lifApi?.confirmClose?.();
@@ -7601,73 +7993,12 @@ export default function App(): JSX.Element {
     ctx.fillStyle = '#0b1426';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     let overlayMessage: string | null = null;
-    let points: Array<{
-      id: string;
-      elementId: string;
-      name: string;
-      sourceFile: string;
-      x: number;
-      y: number;
-      supported: boolean;
-      width?: number;
-      height?: number;
-      orphan: boolean;
-      sequence: number;
-    }> = [];
+    let points: CoordinateImagePoint[] = [];
 
     if (!hasCoordinateInputs) {
       overlayMessage = 'Load LIF and CSV files to visualize coordinates.';
     } else {
-      const visibleImageIds = new Set(cutPointDisplay.visibleImageIds);
-      const allImageIds = new Set(cutPointDisplay.allImageIds);
-      if (coordinateOrphansEnabled) {
-        for (const row of orphanImageRows) {
-          if (!row.visible) {
-            continue;
-          }
-          allImageIds.add(row.id);
-          visibleImageIds.add(row.id);
-        }
-      }
-
-      const filterByCutImages = allImageIds.size > 0;
-      points = mapElements
-        .filter((item) => item.stageX !== undefined && item.stageY !== undefined)
-        .filter((item) => {
-          const isOrphan = orphanImageIds.has(item.uiId);
-          if (isOrphan) {
-            return visibleImageIds.has(item.uiId);
-          }
-          const group = classifyElementName(item.name);
-          if (group === 'pre' && !filterPre) {
-            return false;
-          }
-          if (group === 'post' && !filterPost) {
-            return false;
-          }
-          if (!filterByCutImages) {
-            return true;
-          }
-          return allImageIds.has(item.uiId) && visibleImageIds.has(item.uiId);
-        })
-        .map((item) => ({
-          id: item.uiId,
-          elementId: item.id,
-          name: item.name,
-          sourceFile: item.sourceFile,
-          x: item.stageX as number,
-          y: item.stageY as number,
-          supported: item.supported,
-          width: item.width,
-          height: item.height,
-          orphan: orphanImageIds.has(item.uiId),
-          sequence: extractImageSequence(item.name) ?? Number.MIN_SAFE_INTEGER
-        }))
-        .sort((a, b) =>
-          a.sequence !== b.sequence
-            ? a.sequence - b.sequence
-            : a.name.localeCompare(b.name)
-        );
+      points = coordinateVisibleImagePoints;
 
       if (points.length === 0) {
         overlayMessage = 'No stage positions in this file.';
@@ -7675,21 +8006,38 @@ export default function App(): JSX.Element {
     }
 
     const padding = 40 * (window.devicePixelRatio || 1);
+    const imageBounds = points.map((point) => {
+      const halfWidth =
+        point.width && micronsPerPixel > 0 ? (point.width * micronsPerPixel) / 2 : 0;
+      const halfHeight =
+        point.height && micronsPerPixel > 0 ? (point.height * micronsPerPixel) / 2 : 0;
+      return {
+        minX: point.x - halfWidth,
+        maxX: point.x + halfWidth,
+        minY: point.y - halfHeight,
+        maxY: point.y + halfHeight
+      };
+    });
+    const cutPointBounds = visibleCoordinateCutPoints.map((point) => ({
+      minX: point.x,
+      maxX: point.x,
+      minY: point.y,
+      maxY: point.y
+    }));
     const bounds =
-      points.length > 0
-        ? points.map((point) => {
-            const halfWidth =
-              point.width && micronsPerPixel > 0 ? (point.width * micronsPerPixel) / 2 : 0;
-            const halfHeight =
-              point.height && micronsPerPixel > 0 ? (point.height * micronsPerPixel) / 2 : 0;
-            return {
-              minX: point.x - halfWidth,
-              maxX: point.x + halfWidth,
-              minY: point.y - halfHeight,
-              maxY: point.y + halfHeight
-            };
-          })
-        : [getDefaultViewerBounds(canvas.width, canvas.height, padding)];
+      coordinateFrameMode === 'cut-points' && cutPointBounds.length > 0
+        ? [expandStageBounds(
+            {
+              minX: Math.min(...cutPointBounds.map((entry) => entry.minX)),
+              maxX: Math.max(...cutPointBounds.map((entry) => entry.maxX)),
+              minY: Math.min(...cutPointBounds.map((entry) => entry.minY)),
+              maxY: Math.max(...cutPointBounds.map((entry) => entry.maxY))
+            },
+            1000
+          )]
+        : imageBounds.length > 0
+          ? imageBounds
+          : [getDefaultViewerBounds(canvas.width, canvas.height, padding)];
     const minX = Math.min(...bounds.map((entry) => entry.minX));
     const maxX = Math.max(...bounds.map((entry) => entry.maxX));
     const minY = Math.min(...bounds.map((entry) => entry.minY));
@@ -7926,12 +8274,12 @@ export default function App(): JSX.Element {
       }
     }
 
-    if (coordinatesReady && showCutPoints && cutPointDisplay.visiblePoints.length > 0) {
+    if (visibleCoordinateCutPoints.length > 0) {
       ctx.save();
       ctx.strokeStyle = 'rgba(15, 23, 42, 0.85)';
       ctx.lineWidth = 1;
       const radius = Math.max(2.6, Math.min(7.8, (2 + zoom) * 1.3));
-      for (const point of cutPointDisplay.visiblePoints) {
+      for (const point of visibleCoordinateCutPoints) {
         const px = (point.x * baseScale + baseOffsetX) * zoom + panX;
         const py = (point.y * baseScale + baseOffsetY) * zoom + panY;
         if (px < -20 || px > canvas.width + 20 || py < -20 || py > canvas.height + 20) {
@@ -8218,27 +8566,21 @@ export default function App(): JSX.Element {
       }
     }
   }, [
-    mapElements,
+    coordinateFrameMode,
+    coordinateVisibleImagePoints,
+    cutPointById,
+    hasCoordinateInputs,
+    hoveredCutPointId,
+    hoveredOrphanImageId,
     selectedId,
     selectedIds,
     selectedCutIds,
     imageOpacity,
     micronsPerPixel,
-    showCutPoints,
     showCutLabels,
-    coordinatesReady,
-    cutPointDisplay,
-    cutPointById,
-    hoveredCutPointId,
-    hoveredOrphanImageId,
-    hasCoordinateInputs,
-    orphanImageIds,
     orphanImageInfoById,
-    orphanImageRows,
-    coordinateOrphansEnabled,
-    filterPre,
-    filterPost,
-    thumbProgress
+    thumbProgress,
+    visibleCoordinateCutPoints
   ]);
 
   const updateOverview = useCallback(() => {
@@ -8548,6 +8890,7 @@ export default function App(): JSX.Element {
 
     drawGridOverlay();
 
+    overviewContourAnchorsRef.current = [];
     if (overviewContours.length > 0) {
       ctx.save();
       for (const contour of overviewContours) {
@@ -8573,11 +8916,51 @@ export default function App(): JSX.Element {
         if (contour.points.length > 1) {
           ctx.stroke();
         }
-        for (const point of contour.points) {
+        for (const [pointIndex, point] of contour.points.entries()) {
           const canvasPoint = stageToCanvas(point.x, point.y);
+          overviewContourAnchorsRef.current.push({
+            contourId: contour.id,
+            pointIndex,
+            x: canvasPoint.x,
+            y: canvasPoint.y
+          });
+          const isSelectedAnchor =
+            activeOverviewContourAnchor?.contourId === contour.id &&
+            activeOverviewContourAnchor.pointIndex === pointIndex;
+          const isHoveredAnchor =
+            hoveredOverviewContourAnchor?.contourId === contour.id &&
+            hoveredOverviewContourAnchor.pointIndex === pointIndex;
           ctx.beginPath();
-          ctx.arc(canvasPoint.x, canvasPoint.y, 3, 0, Math.PI * 2);
+          ctx.arc(canvasPoint.x, canvasPoint.y, isSelectedAnchor || isHoveredAnchor ? 5 : 3, 0, Math.PI * 2);
           ctx.fill();
+          if (isSelectedAnchor || isHoveredAnchor) {
+            ctx.strokeStyle = isSelectedAnchor ? '#f9a8d4' : 'rgba(125, 211, 252, 0.95)';
+            ctx.lineWidth = isSelectedAnchor ? 2 : 1.5;
+            ctx.beginPath();
+            ctx.arc(canvasPoint.x, canvasPoint.y, isSelectedAnchor ? 7 : 6.5, 0, Math.PI * 2);
+            ctx.stroke();
+          }
+        }
+        if (overviewContourInsertPreview?.contourId === contour.id) {
+          const previewPoint = stageToCanvas(
+            overviewContourInsertPreview.x,
+            overviewContourInsertPreview.y
+          );
+          ctx.save();
+          ctx.fillStyle = 'rgba(125, 211, 252, 0.5)';
+          ctx.strokeStyle = 'rgba(125, 211, 252, 0.9)';
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.arc(previewPoint.x, previewPoint.y, 5, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(previewPoint.x - 4, previewPoint.y);
+          ctx.lineTo(previewPoint.x + 4, previewPoint.y);
+          ctx.moveTo(previewPoint.x, previewPoint.y - 4);
+          ctx.lineTo(previewPoint.x, previewPoint.y + 4);
+          ctx.stroke();
+          ctx.restore();
         }
         if (contour.points.length > 0) {
           const anchor = stageToCanvas(contour.points[0].x, contour.points[0].y);
@@ -8773,7 +9156,10 @@ export default function App(): JSX.Element {
     overviewHoveredCutPointId,
     overviewSelection,
     overviewContours,
+    activeOverviewContourAnchor,
+    hoveredOverviewContourAnchor,
     activeOverviewContourId,
+    overviewContourInsertPreview,
     overviewContourPreview,
     stagePosition,
     cutPointById,
@@ -8798,6 +9184,47 @@ export default function App(): JSX.Element {
   useEffect(() => {
     updateOverviewRef.current = updateOverview;
   }, [updateOverview]);
+
+  const resetCoordinateMapView = useCallback(() => {
+    mapViewRef.current = {
+      zoom: 1,
+      panX: 0,
+      panY: 0,
+      isDragging: false,
+      startX: 0,
+      startY: 0,
+      startPanX: 0,
+      startPanY: 0,
+      dragDistance: 0
+    };
+    mapBoundsRef.current = null;
+  }, []);
+
+  const handleFrameCoordinateCutPoints = useCallback(() => {
+    if (visibleCoordinateCutPoints.length === 0) {
+      setStatus('No visible cut points to frame.');
+      return;
+    }
+    resetCoordinateMapView();
+    setCoordinateFrameMode('cut-points');
+    if (coordinateFrameMode === 'cut-points') {
+      updateMapRef.current();
+    }
+    setStatus('Framed cut points.');
+  }, [coordinateFrameMode, resetCoordinateMapView, visibleCoordinateCutPoints.length]);
+
+  const handleFrameCoordinateImages = useCallback(() => {
+    if (coordinateVisibleImagePoints.length === 0) {
+      setStatus('No visible images to frame.');
+      return;
+    }
+    resetCoordinateMapView();
+    setCoordinateFrameMode('images');
+    if (coordinateFrameMode === 'images') {
+      updateMapRef.current();
+    }
+    setStatus('Framed images.');
+  }, [coordinateFrameMode, coordinateVisibleImagePoints.length, resetCoordinateMapView]);
 
   useEffect(() => {
     if (!window.lifApi?.onCloseRequest) {
@@ -8906,6 +9333,52 @@ export default function App(): JSX.Element {
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [activeTab]);
+
+  useEffect(() => {
+    const handler = (event: KeyboardEvent) => {
+      if (activeTab !== 'overview' || !activeOverviewContourAnchor) {
+        return;
+      }
+      const target = event.target as HTMLElement | null;
+      const tag = target?.tagName?.toLowerCase();
+      const isEditable =
+        tag === 'input' ||
+        tag === 'textarea' ||
+        (target && (target as HTMLElement).isContentEditable);
+      if (isEditable) {
+        return;
+      }
+      if (event.key !== 'Delete' && event.key !== 'Backspace') {
+        return;
+      }
+      event.preventDefault();
+      pushOverviewHistory(overview);
+      const { contourId, pointIndex } = activeOverviewContourAnchor;
+      updateOverviewContours((contours) =>
+        contours.map((contour) =>
+          contour.id === contourId
+            ? {
+                ...contour,
+                points: contour.points.filter((_, index) => index !== pointIndex)
+              }
+            : contour
+        )
+      );
+      setActiveOverviewContourAnchor(null);
+      setOverviewContourPreview(null);
+      updateOverviewRef.current();
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [
+    activeOverviewContourAnchor,
+    activeTab,
+    overview,
+    pushOverviewHistory,
+    setActiveOverviewContourAnchor,
+    setOverviewContourPreview,
+    updateOverviewContours
+  ]);
 
   useEffect(() => {
     mapViewRef.current = {
@@ -9372,7 +9845,9 @@ export default function App(): JSX.Element {
             continue;
           }
           totalCsv += 1;
-          const referenceImage = cell.preImage?.trim() || cell.cutImage?.trim();
+          const referenceImage = isSingleLinkedImageCsvCell(cell)
+            ? undefined
+            : cell.preImage?.trim() || cell.cutImage?.trim();
           if (referenceImage) {
             withImageRef += 1;
           }
@@ -9428,7 +9903,9 @@ export default function App(): JSX.Element {
           if (sample === DISABLED_SAMPLE) {
             continue;
           }
-          const referenceImage = csvCell.preImage?.trim() || csvCell.cutImage?.trim();
+          const referenceImage = isSingleLinkedImageCsvCell(csvCell)
+            ? undefined
+            : csvCell.preImage?.trim() || csvCell.cutImage?.trim();
           if (!referenceImage) {
             continue;
           }
@@ -9953,13 +10430,82 @@ export default function App(): JSX.Element {
     const worldY = (sy - panY) / zoom;
     const stageX = (worldX - baseOffsetX) / baseScale;
     const stageY = (worldY - baseOffsetY) / baseScale;
+    const stageToCanvas = (x: number, y: number) => ({
+      x: (x * baseScale + baseOffsetX) * zoom + panX,
+      y: (y * baseScale + baseOffsetY) * zoom + panY
+    });
+    const contourHitRadius = 10 * dpr;
+    const hitContourAnchor = overviewContourAnchorsRef.current
+      .filter((anchor) => !activeOverviewContourId || anchor.contourId === activeOverviewContourId)
+      .find((anchor) => {
+        const dx = anchor.x - sx;
+        const dy = anchor.y - sy;
+        return Math.sqrt(dx * dx + dy * dy) <= contourHitRadius;
+      });
 
     if (activeOverviewContourId) {
-      const hasActiveContour = overviewContours.some((contour) => contour.id === activeOverviewContourId);
+      const activeContour = overviewContours.find((contour) => contour.id === activeOverviewContourId);
+      const hasActiveContour = Boolean(activeContour);
       if (!hasActiveContour) {
         setActiveOverviewContour(null);
+        setActiveOverviewContourAnchor(null);
         setOverviewContourPreview(null);
         return;
+      }
+      if (hitContourAnchor) {
+        pushOverviewHistory(overview);
+        setActiveOverviewContourAnchor({
+          contourId: hitContourAnchor.contourId,
+          pointIndex: hitContourAnchor.pointIndex
+        });
+        setHoveredOverviewContourAnchor({
+          contourId: hitContourAnchor.contourId,
+          pointIndex: hitContourAnchor.pointIndex
+        });
+        setOverviewContourInsertPreview(null);
+        overviewContourDragRef.current = {
+          active: true,
+          contourId: hitContourAnchor.contourId,
+          pointIndex: hitContourAnchor.pointIndex
+        };
+        updateOverviewRef.current();
+        return;
+      }
+      if (activeContour && activeContour.points.length >= 2) {
+        const segmentHit = closestPolylineSegmentIndex(
+          sx,
+          sy,
+          activeContour.points.map((point) => stageToCanvas(point.x, point.y)),
+          activeContour.closed
+        );
+        if (segmentHit && segmentHit.distance <= contourHitRadius) {
+          pushOverviewHistory(overview);
+          const insertIndex = Math.min(activeContour.points.length, segmentHit.index + 1);
+          updateOverviewContours((contours) =>
+            contours.map((contour) =>
+              contour.id === activeOverviewContourId
+                ? {
+                    ...contour,
+                    points: [
+                      ...contour.points.slice(0, insertIndex),
+                      { x: stageX, y: stageY },
+                      ...contour.points.slice(insertIndex)
+                    ]
+                  }
+                : contour
+            )
+          );
+          setActiveOverviewContourAnchor({
+            contourId: activeOverviewContourId,
+            pointIndex: insertIndex
+          });
+          setHoveredOverviewContourAnchor(null);
+          setOverviewContourInsertPreview(null);
+          setOverviewContourPreview({ x: stageX, y: stageY });
+          setOverviewHoveredCutPointId(null);
+          updateOverviewRef.current();
+          return;
+        }
       }
       updateOverviewContours((contours) =>
         contours.map((contour) =>
@@ -9971,6 +10517,14 @@ export default function App(): JSX.Element {
             : contour
         )
       );
+      setActiveOverviewContourAnchor({
+        contourId: activeOverviewContourId,
+        pointIndex:
+          (overviewContours.find((contour) => contour.id === activeOverviewContourId)?.points.length ??
+            0)
+      });
+      setHoveredOverviewContourAnchor(null);
+      setOverviewContourInsertPreview(null);
       setOverviewContourPreview({ x: stageX, y: stageY });
       setOverviewHoveredCutPointId(null);
       updateOverviewRef.current();
@@ -10082,6 +10636,36 @@ export default function App(): JSX.Element {
     const worldY = (y - panY) / zoom;
     const stageX = (worldX - baseOffsetX) / baseScale;
     const stageY = (worldY - baseOffsetY) / baseScale;
+    const contourHitRadius = 10 * dpr;
+    const hoveredContourAnchor = overviewContourAnchorsRef.current
+      .filter((anchor) => !activeOverviewContourId || anchor.contourId === activeOverviewContourId)
+      .find((anchor) => {
+        const dx = anchor.x - x;
+        const dy = anchor.y - y;
+        return Math.sqrt(dx * dx + dy * dy) <= contourHitRadius;
+      });
+
+    if (overviewContourDragRef.current.active) {
+      const { contourId, pointIndex } = overviewContourDragRef.current;
+      if (contourId) {
+        updateOverviewContours((contours) =>
+          contours.map((contour) =>
+            contour.id === contourId
+              ? {
+                  ...contour,
+                  points: contour.points.map((point, index) =>
+                    index === pointIndex ? { x: stageX, y: stageY } : point
+                  )
+                }
+              : contour
+          )
+        );
+        setOverviewContourPreview({ x: stageX, y: stageY });
+        canvas.style.cursor = 'grabbing';
+        updateOverviewRef.current();
+      }
+      return;
+    }
 
     if (overviewSelection.enabled && overviewSelectionRef.current.isSelecting) {
       const { mode, handle, startRect, startStageX, startStageY } = overviewSelectionRef.current;
@@ -10253,9 +10837,48 @@ export default function App(): JSX.Element {
     }
 
     if (activeOverviewContourId) {
+      const activeContour = overviewContours.find((contour) => contour.id === activeOverviewContourId);
+      const hoveredContourSegment =
+        activeContour && activeContour.points.length >= 2
+          ? closestPolylineSegmentIndex(
+              x,
+              y,
+              activeContour.points.map((point) => ({
+                x: (point.x * baseScale + baseOffsetX) * zoom + panX,
+                y: (point.y * baseScale + baseOffsetY) * zoom + panY
+              })),
+              activeContour.closed
+            )
+          : undefined;
+      if (hoveredContourAnchor) {
+        setHoveredOverviewContourAnchor({
+          contourId: hoveredContourAnchor.contourId,
+          pointIndex: hoveredContourAnchor.pointIndex
+        });
+        setOverviewContourInsertPreview(null);
+      } else if (hoveredContourSegment && hoveredContourSegment.distance <= contourHitRadius) {
+        setHoveredOverviewContourAnchor(null);
+        setOverviewContourInsertPreview({
+          contourId: activeOverviewContourId,
+          pointIndex: Math.min(
+            activeContour?.points.length ?? 0,
+            hoveredContourSegment.index + 1
+          ),
+          x: stageX,
+          y: stageY
+        });
+      } else {
+        setHoveredOverviewContourAnchor(null);
+        setOverviewContourInsertPreview(null);
+      }
       setOverviewContourPreview({ x: stageX, y: stageY });
-      if (canvas.style.cursor !== 'crosshair') {
-        canvas.style.cursor = 'crosshair';
+      const nextCursor = hoveredContourAnchor
+        ? 'grab'
+        : hoveredContourSegment && hoveredContourSegment.distance <= contourHitRadius
+          ? 'copy'
+          : 'crosshair';
+      if (canvas.style.cursor !== nextCursor) {
+        canvas.style.cursor = nextCursor;
       }
       if (overviewHoveredCutPointId !== null) {
         setOverviewHoveredCutPointId(null);
@@ -10331,6 +10954,11 @@ export default function App(): JSX.Element {
     if (overviewSelection.enabled && overviewSelectionRef.current.isSelecting) {
       overviewSelectionRef.current.isSelecting = false;
     }
+    overviewContourDragRef.current = {
+      active: false,
+      contourId: null,
+      pointIndex: -1
+    };
     overviewDragRef.current.isDragging = false;
     if (overviewViewRef.current.isDragging) {
       overviewViewRef.current.isDragging = false;
@@ -10353,7 +10981,19 @@ export default function App(): JSX.Element {
           stageY >= Math.min(rectStage.y, rectStage.y + rectStage.h) &&
           stageY <= Math.max(rectStage.y, rectStage.y + rectStage.h)
         : false;
-      canvas.style.cursor = inActiveImage ? 'grab' : 'crosshair';
+      const contourHitRadius = 10 * dpr;
+      const hoveredContourAnchor = overviewContourAnchorsRef.current
+        .filter((anchor) => !activeOverviewContourId || anchor.contourId === activeOverviewContourId)
+        .find((anchor) => {
+          const dx = anchor.x - x;
+          const dy = anchor.y - y;
+          return Math.sqrt(dx * dx + dy * dy) <= contourHitRadius;
+        });
+      if (activeOverviewContourId) {
+        canvas.style.cursor = hoveredContourAnchor ? 'grab' : 'crosshair';
+      } else {
+        canvas.style.cursor = inActiveImage ? 'grab' : 'crosshair';
+      }
     }
   };
 
@@ -10367,6 +11007,8 @@ export default function App(): JSX.Element {
 
   const handleOverviewPointerLeave = () => {
     setOverviewHoveredCutPointId(null);
+    setHoveredOverviewContourAnchor(null);
+    setOverviewContourInsertPreview(null);
     if (activeOverviewContourId) {
       setOverviewContourPreview(null);
       updateOverviewRef.current();
@@ -13346,6 +13988,22 @@ export default function App(): JSX.Element {
                 <button className="secondary" onClick={handleCalculateCoordinates}>
                   Calculate coordinates
                 </button>
+                <div className="button-row">
+                  <button
+                    className="secondary"
+                    onClick={handleFrameCoordinateCutPoints}
+                    disabled={visibleCoordinateCutPoints.length === 0}
+                  >
+                    Frame cut points
+                  </button>
+                  <button
+                    className="secondary"
+                    onClick={handleFrameCoordinateImages}
+                    disabled={coordinateVisibleImagePoints.length === 0}
+                  >
+                    Frame images
+                  </button>
+                </div>
                 {coordDebug ? (
                   <div className="coord-debug">
                     {coordDebug.split('\n').map((line) => (
@@ -14021,7 +14679,18 @@ export default function App(): JSX.Element {
       {orphanAssignmentPrompt && (
         <div className="modal-backdrop">
           <div className="modal-card orphan-assignment-modal">
-            <div className="modal-title">Assign orphan image</div>
+            <div className="orphan-assignment-header">
+              <div className="modal-title">Assign orphan image</div>
+              {selectedOrphanAssignmentTarget && orphanAssignmentHiddenImageCount > 0 ? (
+                <button
+                  type="button"
+                  className="secondary orphan-assignment-toggle"
+                  onClick={() => setShowAllOrphanAssignmentImages((prev) => !prev)}
+                >
+                  {showAllOrphanAssignmentImages ? 'Show expected range' : 'Show all images'}
+                </button>
+              ) : null}
+            </div>
             <div className="modal-text">{orphanAssignmentPrompt.contextLabel}</div>
             <div className="modal-text">
               {orphanAssignmentPrompt.collector
@@ -14064,10 +14733,14 @@ export default function App(): JSX.Element {
               {selectedOrphanAssignmentTarget ? (
                 <div className="orphan-preview-grid-wrap">
                   <div className="orphan-preview-grid">
-                    {orphanAssignmentPrompt.imageOptions.length === 0 ? (
-                      <div className="empty-list">No orphan images are available for this collector.</div>
+                    {visibleOrphanAssignmentImageOptions.length === 0 ? (
+                      <div className="empty-list">
+                        {orphanAssignmentExpectedImageRange && !showAllOrphanAssignmentImages
+                          ? 'No orphan images fall within the expected image-number range for this position. Use "Show all images" to inspect the full collector set.'
+                          : 'No orphan images are available for this collector.'}
+                      </div>
                     ) : (
-                      orphanAssignmentPrompt.imageOptions.map((option) => {
+                      visibleOrphanAssignmentImageOptions.map((option) => {
                         const previewState = orphanAssignmentPreviewState[option.key] ?? {
                           loading: false
                         };
@@ -14182,6 +14855,9 @@ export default function App(): JSX.Element {
             <div className="modal-title">Close session?</div>
             <div className="modal-text">
               End the active session for {currentUserLabel} and close LMDmapper?
+            </div>
+            <div className="modal-text">
+              Closing does not save the session file automatically.
             </div>
             <div className="modal-actions">
               <button type="button" className="secondary" onClick={handleCancelClosePrompt}>

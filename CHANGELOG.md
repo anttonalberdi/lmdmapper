@@ -3,9 +3,24 @@
 All notable changes to this project are documented in this file.
 
 ## [Unreleased]
-Target: 1.2.4
+Target: 1.2.6
 
-- Log all new changes here for the upcoming 1.2.4 release.
+- Log all new changes here for the upcoming 1.2.6 release.
+
+## [1.2.5] - 2026-04-16
+
+- Overview contour editing now allows dragging existing contour anchors to new positions and deleting the selected anchor with the `Delete` key.
+- Overview contour editing now highlights draggable anchors on hover and shows a translucent anchor preview when hovering a contour segment before inserting a new anchor.
+- Coordinate warning banners in Metadata and Coordinates now derive from the current resolved metadata rows, so they clear correctly after image/sample links are corrected.
+- Overview crop image export now uses the overview layer visibility shown in the viewer, instead of always exporting the post-cut image.
+
+## [1.2.4] - 2026-04-11
+
+- Coordinates now includes `Frame cut points` and `Frame images` actions that reset the viewer zoom and axes to encompass the currently visualized cut points or images.
+- CSV rows that contain only a single linked image are now treated as unresolved image assignments instead of resolved coordinates, while keeping their stored pixel coordinates available in the orphan-assignment workflow.
+- Closing LMDmapper no longer auto-saves the current session file; session data is only written when the user explicitly saves.
+- `Assign orphan image` now shows only orphan images inside the expected image-number range by default, with a top-right button to reveal the full collector image set when needed.
+- The default orphan-image range is now bounded by the previous and next resolved source columns, not by nearby rows, so re-cuts within the same column do not hide valid candidate images.
 
 ## [1.2.3] - 2026-04-10
 

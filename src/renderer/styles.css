@@ -384,6 +384,18 @@ body {
   gap: 14px;
 }
 
+.orphan-assignment-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.orphan-assignment-toggle {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
 .orphan-target-list {
   max-height: 240px;
 }
