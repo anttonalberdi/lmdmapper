@@ -12,8 +12,8 @@ import packageJson from '../../package.json';
 import logo from './assets/logo.png';
 
 const EMPTY_STATE = 'Import LIF files to start a session.';
-const USER_DIRECTORY_KEY = 'lmdmapper.userDirectory';
-const DEFAULT_SESSION_USERS = ['Amalia Bogri', 'Bryan Wang', 'Jaime Ramirez', 'Nanna Gaun'];
+const USER_DIRECTORY_KEY = 'lmdmapper.localUsers';
+const KEYWORD_LIBRARY_STORAGE_KEY = 'lmdmapper.keywordLibrary';
 const DEFAULT_STAGE_POSITION = 2;
 const DEFAULT_MICROSAMPLE_START = 1;
 const APP_VERSION = typeof packageJson.version === 'string' ? packageJson.version : '0.0.0';
@@ -154,6 +154,10 @@ function formatNumber(value?: number, digits = 2): string {
   return value.toFixed(digits);
 }
 
+function normalizeCryosectionMatchKey(value: string | null | undefined): string {
+  return typeof value === 'string' ? value.trim().toLowerCase() : '';
+}
+
 function formatOverviewAlignmentValue(
   field: 'scaleX' | 'scaleY' | 'offsetX' | 'offsetY',
   value: number
@@ -189,6 +193,25 @@ function normalizeUserList(users: string[]): string[] {
     }
   }
   return Array.from(deduped);
+}
+
+function loadStoredUserDirectory(): string[] {
+  if (typeof window === 'undefined') {
+    return [];
+  }
+  try {
+    const raw = window.localStorage.getItem(USER_DIRECTORY_KEY);
+    if (!raw) {
+      return [];
+    }
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return normalizeUserList(parsed.filter((item): item is string => typeof item === 'string'));
+  } catch {
+    return [];
+  }
 }
 
 function formatSessionUsers(users: string[]): string {
@@ -388,7 +411,7 @@ function closestPolylineSegmentIndex(
 }
 
 type ElementGroup = 'pre' | 'post' | 'other';
-type SampleType = 'P' | 'M' | 'Z' | 'R' | 'N';
+type SampleType = 'P' | 'X' | 'M' | 'Z' | 'R' | 'N';
 type CollectionCell = { left: number; right: number; rightTouched?: boolean };
 type ProjectType =
   | 'Split-plate two cryosections'
@@ -477,12 +500,22 @@ type OverviewCropResult = {
   }>;
   layer: 'pre' | 'post';
 };
+type OverviewCropCsvRow = {
+  id: string;
+  well: string;
+  code?: string;
+  plateLabel?: string;
+  x?: number;
+  y?: number;
+};
 type OverviewContour = {
   id: string;
   name: string;
   color: string;
   visible: boolean;
   closed: boolean;
+  coordinateSpace: 'stage' | 'layer';
+  layer: 'pre' | 'post';
   points: Array<{ x: number; y: number }>;
 };
 type OverviewAlignmentField = 'scaleX' | 'scaleY' | 'offsetX' | 'offsetY';
@@ -502,6 +535,84 @@ type HistoryEntry = {
   user?: string;
   sessionId?: string;
   snapshot: Record<string, unknown>;
+};
+type MetadataRow = {
+  key: string;
+  cellKey: string;
+  well: string;
+  plateLabel: string;
+  batch: string;
+  halfLabel: string;
+  half: 'left' | 'right';
+  cryoIndex: number;
+  sample: SampleType;
+  plateIndex: number;
+  rowIndex: number;
+  colIndex: number;
+  coordStatus: 'ok' | 'bad' | 'pending' | 'warn';
+  inferred: boolean;
+  inferenceConfirmed: boolean;
+  manualAssigned: boolean;
+  autoCode: string;
+  code: string;
+  number: string;
+  collection: string;
+  collectionMethod: string;
+  shape: string;
+  images: string;
+  pixelX?: number;
+  pixelY?: number;
+  xCoord?: number;
+  yCoord?: number;
+  size?: number;
+  notes: string;
+  contourDistances: Record<string, number | undefined>;
+};
+type WorkspaceCutPoint = {
+  id: string;
+  x: number;
+  y: number;
+  sample: SampleType;
+  code?: string;
+  preImage?: string;
+  cutImage?: string;
+  inferred: boolean;
+  inferenceConfirmed: boolean;
+  plateLabel: string;
+  well: string;
+  elementUiId?: string;
+  imageUiIds: string[];
+  plateIndex: number;
+  rowIndex: number;
+  colIndex: number;
+  sessionId: string;
+  sessionLabel: string;
+  sessionColor: string;
+  sourceCryosection: string;
+  editable: boolean;
+  imported: boolean;
+};
+type WorkspaceSessionImport = {
+  id: string;
+  filePath: string;
+  label: string;
+  color: string;
+  plateCount: 1 | 2;
+  plateAssignments: PlateAssignment[];
+  designPlates: PlateConfig[];
+  collectionPlates: CollectionCell[][][];
+  collectionPlateNotes: [string, string];
+  collectionColumnAreas: [string[], string[]];
+  collectionMetadata: CollectionMetadata;
+  metadataRows: MetadataRow[];
+  cryosectionNames: string[];
+  cutPointsByCryoKey: Record<string, WorkspaceCutPoint[]>;
+  warnings: string[];
+};
+type WorkspaceLoadPromptState = {
+  sessions: WorkspaceSessionImport[];
+  warnings: string[];
+  sharedCryosections: string[];
 };
 type RandomAssignmentSettings = {
   M: number;
@@ -550,6 +661,48 @@ type MetadataDisplayColumn = {
   contourId?: string;
   contourCryoIndex?: number;
 };
+type KeywordKey =
+  | 'session'
+  | 'cryosection'
+  | 'specimen'
+  | 'plate'
+  | 'batch'
+  | 'well'
+  | 'row'
+  | 'column'
+  | 'area'
+  | 'status'
+  | 'sampleType'
+  | 'microsample'
+  | 'number'
+  | 'shape'
+  | 'collection'
+  | 'collectionMethod'
+  | 'images'
+  | 'pixelX'
+  | 'pixelY'
+  | 'xcoord'
+  | 'ycoord'
+  | 'size'
+  | 'notes'
+  | 'date'
+  | 'startTime'
+  | 'endTime'
+  | 'temperature'
+  | 'humidity'
+  | 'description'
+  | 'positiveSample'
+  | 'positiveControl'
+  | 'membraneControl'
+  | 'lysisControl'
+  | 'reactionControl'
+  | 'notUsed';
+type KeywordDefinition = {
+  key: KeywordKey;
+  defaultLabel: string;
+  group: string;
+};
+type KeywordLibrary = Record<KeywordKey, string>;
 
 const MAX_CRYOSECTIONS = 4;
 const MAX_PLATES = 2;
@@ -559,14 +712,20 @@ const DEFAULT_SAMPLE: SampleType = 'P';
 const DISABLED_SAMPLE: SampleType = 'N';
 const SAMPLE_OPTIONS: Array<{ type: SampleType; label: string }> = [
   { type: 'P', label: 'Positive sample (P)' },
+  { type: 'X', label: 'Positive control (X)' },
   { type: 'M', label: 'Membrane control (M)' },
   { type: 'Z', label: 'Lysis control (Z)' },
   { type: 'R', label: 'Reaction control (R)' },
   { type: 'N', label: 'Not used (N)' }
 ];
+const isNoCoordinateControlSample = (sample: SampleType): boolean =>
+  sample === 'X' || sample === 'Z' || sample === 'R';
 const COLLECTION_METHOD_OPTIONS = ['Lid8_Covaris_500639'];
+const WORKSPACE_SESSION_COLORS = ['#60a5fa', '#f59e0b', '#34d399', '#f472b6', '#a78bfa', '#f87171'];
+const PRIMARY_WORKSPACE_SESSION_ID = 'workspace:primary';
 const CUT_POINT_COLORS: Record<SampleType, string> = {
   P: '#38bdf8',
+  X: '#f472b6',
   M: '#f59e0b',
   Z: '#10b981',
   R: '#f87171',
@@ -576,6 +735,7 @@ const PROJECT_CRYO_COLORS = ['#3b82f6', '#f59e0b', '#10b981', '#ef4444'];
 const PANEL_BG = { r: 37, g: 38, b: 43 };
 const ROW_TINTS: Record<SampleType, { r: number; g: number; b: number; a: number }> = {
   P: { r: 59, g: 130, b: 246, a: 0.08 },
+  X: { r: 244, g: 114, b: 182, a: 0.08 },
   M: { r: 245, g: 158, b: 11, a: 0.08 },
   Z: { r: 16, g: 185, b: 129, a: 0.08 },
   R: { r: 248, g: 113, b: 113, a: 0.08 },
@@ -591,6 +751,7 @@ const blendWithPanel = (tint: { r: number; g: number; b: number; a: number }) =>
   )}, ${blendChannel(PANEL_BG.b, tint.b, tint.a)})`;
 const CUT_POINT_TOOLTIP_BG: Record<SampleType, string> = {
   P: blendWithPanel(ROW_TINTS.P),
+  X: blendWithPanel(ROW_TINTS.X),
   M: blendWithPanel(ROW_TINTS.M),
   Z: blendWithPanel(ROW_TINTS.Z),
   R: blendWithPanel(ROW_TINTS.R),
@@ -614,6 +775,67 @@ const STAGE_POSITIONS = [
     membrane: { tl: { x: 98718, y: 8682 }, br: { x: 114760, y: 53772 } }
   }
 ];
+const getOverviewLayerRectForStagePosition = (
+  stagePosition: number | null | undefined,
+  layer: OverviewLayerState
+) => {
+  if (!stagePosition) {
+    return null;
+  }
+  const stageSpec = STAGE_POSITIONS[stagePosition - 1];
+  if (!stageSpec) {
+    return null;
+  }
+  const baseX = stageSpec.slide.tl.x;
+  const baseY = stageSpec.slide.tl.y;
+  const baseW = stageSpec.slide.br.x - stageSpec.slide.tl.x;
+  const baseH = stageSpec.slide.br.y - stageSpec.slide.tl.y;
+  return {
+    baseX,
+    baseY,
+    baseW,
+    baseH,
+    x: baseX + layer.offsetX,
+    y: baseY + layer.offsetY,
+    w: baseW * layer.scaleX,
+    h: baseH * layer.scaleY
+  };
+};
+const getOverviewContourStagePoints = (
+  contour: OverviewContour,
+  overview: OverviewState,
+  stagePosition: number | null | undefined
+) => {
+  if (contour.coordinateSpace === 'layer') {
+    const layerRect = getOverviewLayerRectForStagePosition(stagePosition, overview[contour.layer]);
+    if (!layerRect) {
+      return [];
+    }
+    return contour.points.map((point) => ({
+      x: layerRect.x + point.x * layerRect.w,
+      y: layerRect.y + point.y * layerRect.h
+    }));
+  }
+  return contour.points;
+};
+const toOverviewContourPoint = (
+  contour: OverviewContour,
+  stagePoint: { x: number; y: number },
+  overview: OverviewState,
+  stagePosition: number | null | undefined
+) => {
+  if (contour.coordinateSpace === 'layer') {
+    const layerRect = getOverviewLayerRectForStagePosition(stagePosition, overview[contour.layer]);
+    if (!layerRect || layerRect.w === 0 || layerRect.h === 0) {
+      return { ...stagePoint };
+    }
+    return {
+      x: (stagePoint.x - layerRect.x) / layerRect.w,
+      y: (stagePoint.y - layerRect.y) / layerRect.h
+    };
+  }
+  return { ...stagePoint };
+};
 const EMPTY_VIEW_MIN_Y = 10000;
 const EMPTY_VIEW_MAX_Y = 50000;
 const OVERVIEW_ASPECTS = [
@@ -648,6 +870,123 @@ const METADATA_COLUMNS: Array<{
   { key: 'size', label: 'Size', defaultVisible: true },
   { key: 'notes', label: 'Notes', defaultVisible: true }
 ];
+const KEYWORD_DEFINITIONS: KeywordDefinition[] = [
+  { key: 'session', defaultLabel: 'Session', group: 'Session setup' },
+  { key: 'cryosection', defaultLabel: 'Cryosection', group: 'Session setup' },
+  { key: 'specimen', defaultLabel: 'Specimen', group: 'Session setup' },
+  { key: 'plate', defaultLabel: 'Plate', group: 'Plate layout' },
+  { key: 'batch', defaultLabel: 'Batch', group: 'Plate layout' },
+  { key: 'well', defaultLabel: 'Well', group: 'Plate layout' },
+  { key: 'row', defaultLabel: 'Row', group: 'Plate layout' },
+  { key: 'column', defaultLabel: 'Column', group: 'Plate layout' },
+  { key: 'area', defaultLabel: 'Area', group: 'Collection' },
+  { key: 'collection', defaultLabel: 'Collection', group: 'Collection' },
+  { key: 'collectionMethod', defaultLabel: 'Collection Method', group: 'Collection' },
+  { key: 'date', defaultLabel: 'Date', group: 'Collection' },
+  { key: 'startTime', defaultLabel: 'Start Time', group: 'Collection' },
+  { key: 'endTime', defaultLabel: 'End Time', group: 'Collection' },
+  { key: 'temperature', defaultLabel: 'Temperature', group: 'Collection' },
+  { key: 'humidity', defaultLabel: 'Humidity', group: 'Collection' },
+  { key: 'status', defaultLabel: 'Status', group: 'Metadata' },
+  { key: 'sampleType', defaultLabel: 'Sample Type', group: 'Metadata' },
+  { key: 'microsample', defaultLabel: 'Microsample', group: 'Metadata' },
+  { key: 'number', defaultLabel: 'Number', group: 'Metadata' },
+  { key: 'shape', defaultLabel: 'Shape', group: 'Metadata' },
+  { key: 'images', defaultLabel: 'Images', group: 'Metadata' },
+  { key: 'pixelX', defaultLabel: 'Pixel X', group: 'Metadata' },
+  { key: 'pixelY', defaultLabel: 'Pixel Y', group: 'Metadata' },
+  { key: 'xcoord', defaultLabel: 'Xcoord', group: 'Metadata' },
+  { key: 'ycoord', defaultLabel: 'Ycoord', group: 'Metadata' },
+  { key: 'size', defaultLabel: 'Size', group: 'Metadata' },
+  { key: 'notes', defaultLabel: 'Notes', group: 'Metadata' },
+  { key: 'description', defaultLabel: 'Description', group: 'Metadata' },
+  { key: 'positiveSample', defaultLabel: 'Positive sample', group: 'Sample types' },
+  { key: 'positiveControl', defaultLabel: 'Positive control', group: 'Sample types' },
+  { key: 'membraneControl', defaultLabel: 'Membrane control', group: 'Sample types' },
+  { key: 'lysisControl', defaultLabel: 'Lysis control', group: 'Sample types' },
+  { key: 'reactionControl', defaultLabel: 'Reaction control', group: 'Sample types' },
+  { key: 'notUsed', defaultLabel: 'Not used', group: 'Sample types' }
+];
+const DEFAULT_KEYWORD_LIBRARY = KEYWORD_DEFINITIONS.reduce((acc, definition) => {
+  acc[definition.key] = definition.defaultLabel;
+  return acc;
+}, {} as KeywordLibrary);
+const METADATA_COLUMN_KEYWORDS: Partial<Record<MetadataColumnKey, KeywordKey>> = {
+  status: 'status',
+  well: 'well',
+  plate: 'plate',
+  batch: 'session',
+  cryosection: 'cryosection',
+  sampleType: 'sampleType',
+  microsample: 'microsample',
+  number: 'number',
+  shape: 'shape',
+  collection: 'collection',
+  collectionMethod: 'collectionMethod',
+  images: 'images',
+  pixelx: 'pixelX',
+  pixely: 'pixelY',
+  xcoord: 'xcoord',
+  ycoord: 'ycoord',
+  size: 'size',
+  notes: 'notes'
+};
+const normalizeKeywordValue = (value: unknown, fallback: string): string => {
+  if (typeof value !== 'string') {
+    return fallback;
+  }
+  const trimmed = value.trim().replace(/\s+/g, ' ');
+  return trimmed || fallback;
+};
+const normalizeKeywordLibrary = (raw: unknown): KeywordLibrary => {
+  const record = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+  return KEYWORD_DEFINITIONS.reduce((acc, definition) => {
+    acc[definition.key] = normalizeKeywordValue(record[definition.key], definition.defaultLabel);
+    return acc;
+  }, {} as KeywordLibrary);
+};
+function loadStoredKeywordLibrary(): KeywordLibrary {
+  if (typeof window === 'undefined') {
+    return { ...DEFAULT_KEYWORD_LIBRARY };
+  }
+  try {
+    const raw = window.localStorage.getItem(KEYWORD_LIBRARY_STORAGE_KEY);
+    if (!raw) {
+      return { ...DEFAULT_KEYWORD_LIBRARY };
+    }
+    return normalizeKeywordLibrary(JSON.parse(raw));
+  } catch {
+    return { ...DEFAULT_KEYWORD_LIBRARY };
+  }
+}
+const getKeywordLabel = (library: KeywordLibrary, key: KeywordKey): string =>
+  normalizeKeywordValue(library[key], DEFAULT_KEYWORD_LIBRARY[key]);
+const getKeywordCandidates = (
+  library: KeywordLibrary,
+  key: KeywordKey,
+  aliases: string[] = []
+): string[] => {
+  const values = [getKeywordLabel(library, key), DEFAULT_KEYWORD_LIBRARY[key], ...aliases];
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const normalized = normalizeKeywordValue(value, '');
+    const matchKey = normalizeHeaderKey(normalized);
+    if (!normalized || seen.has(matchKey)) {
+      continue;
+    }
+    seen.add(matchKey);
+    result.push(normalized);
+  }
+  return result;
+};
+const getMetadataColumnLabel = (columnKey: MetadataColumnKey, library: KeywordLibrary): string => {
+  const keywordKey = METADATA_COLUMN_KEYWORDS[columnKey];
+  if (!keywordKey) {
+    return METADATA_COLUMNS.find((column) => column.key === columnKey)?.label ?? columnKey;
+  }
+  return getKeywordLabel(library, keywordKey);
+};
 const DEFAULT_METADATA_COLUMNS = METADATA_COLUMNS.reduce(
   (acc, column) => ({ ...acc, [column.key]: column.defaultVisible }),
   {} as Record<MetadataColumnKey, boolean>
@@ -835,6 +1174,29 @@ const normalizeCsvSourceGroupId = (value: unknown): string | null => {
 const createCsvSourceGroupId = () =>
   `csvsrc_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 
+const moveWorkspaceSession = (
+  sessions: WorkspaceSessionImport[],
+  fromIndex: number,
+  toIndex: number
+) => {
+  if (
+    fromIndex === toIndex ||
+    fromIndex < 0 ||
+    toIndex < 0 ||
+    fromIndex >= sessions.length ||
+    toIndex >= sessions.length
+  ) {
+    return sessions;
+  }
+  const next = sessions.slice();
+  const [item] = next.splice(fromIndex, 1);
+  if (!item) {
+    return sessions;
+  }
+  next.splice(toIndex, 0, item);
+  return next;
+};
+
 const buildSharedCsvSourceKey = (
   files: string[],
   cryoIndex: number,
@@ -901,14 +1263,14 @@ const buildCryoCsvTargets = (
   plateCount: number,
   assignments: PlateAssignment[],
   csvFilesByCryo: string[][],
-  csvSourceGroupIdsByCryo: Array<string | null>
+  csvSourceGroupIdsByCryo: Array<string | null>,
+  designPlates: PlateConfig[]
 ) => {
   const targets: Array<{
     plateIndex: number;
-    startCol: number;
-    endCol: number;
-    sourceStartCol: number;
-    sourceEndCol: number;
+    colIndex: number;
+    sourceCol: number;
+    enabledRows: number[];
   }> = [];
   const nextSourceColByKey = new Map<string, number>();
   const targetSourceKey = buildSharedCsvSourceKey(
@@ -934,24 +1296,31 @@ const buildCryoCsvTargets = (
       ) {
         continue;
       }
-      const { startCol, endCol, width } = getPlateSegmentColumnBounds(assignment, segmentIndex);
+      const { startCol, endCol } = getPlateSegmentColumnBounds(assignment, segmentIndex);
       const sourceKey = buildSharedCsvSourceKey(
         csvFilesByCryo[segmentCryoIndex] ?? [],
         segmentCryoIndex,
         csvSourceGroupIdsByCryo[segmentCryoIndex]
       );
-      const sourceStartCol = nextSourceColByKey.get(sourceKey) ?? 0;
-      nextSourceColByKey.set(sourceKey, sourceStartCol + width);
-      if (segmentCryoIndex !== cryoIndex) {
-        continue;
+      for (let colIndex = startCol; colIndex <= endCol; colIndex += 1) {
+        const enabledRows = PLATE_ROWS.map((_, rowIndex) => rowIndex).filter(
+          (rowIndex) => (designPlates[plateIndex]?.cells[rowIndex]?.[colIndex] ?? DEFAULT_SAMPLE) !== DISABLED_SAMPLE
+        );
+        if (enabledRows.length === 0) {
+          continue;
+        }
+        const sourceCol = nextSourceColByKey.get(sourceKey) ?? 0;
+        nextSourceColByKey.set(sourceKey, sourceCol + 1);
+        if (segmentCryoIndex !== cryoIndex) {
+          continue;
+        }
+        targets.push({
+          plateIndex,
+          colIndex,
+          sourceCol,
+          enabledRows
+        });
       }
-      targets.push({
-        plateIndex,
-        startCol,
-        endCol,
-        sourceStartCol,
-        sourceEndCol: sourceStartCol + width - 1
-      });
     }
   }
 
@@ -1078,6 +1447,8 @@ const serializeOverviewContours = (contours: OverviewContour[]) =>
     color: contour.color,
     visible: contour.visible,
     closed: contour.closed,
+    coordinateSpace: contour.coordinateSpace,
+    layer: contour.layer,
     points: contour.points
   }));
 
@@ -1123,7 +1494,14 @@ const restoreOverviewState = (snapshot: OverviewState, current: OverviewState): 
 const createCsvCells = (): CsvCell[][] => PLATE_ROWS.map(() => PLATE_COLS.map(() => ({})));
 
 const normalizeSampleType = (value: unknown): SampleType => {
-  if (value === 'P' || value === 'M' || value === 'Z' || value === 'R' || value === 'N') {
+  if (
+    value === 'P' ||
+    value === 'X' ||
+    value === 'M' ||
+    value === 'Z' ||
+    value === 'R' ||
+    value === 'N'
+  ) {
     return value;
   }
   return DEFAULT_SAMPLE;
@@ -1168,9 +1546,14 @@ const normalizePlateData = (raw: unknown, fallbackLabel: string): PlateConfig =>
   };
 };
 
-const formatPlateDisplayLabel = (plateIndex: number, plateBatchId: string): string => {
+const formatPlateDisplayLabel = (
+  plateIndex: number,
+  plateBatchId: string,
+  plateLabel = 'PLATE'
+): string => {
   const trimmed = plateBatchId.trim();
-  return trimmed ? `PLATE ${plateIndex + 1} - ${trimmed}` : `PLATE ${plateIndex + 1}`;
+  const baseLabel = normalizeKeywordValue(plateLabel, 'Plate');
+  return trimmed ? `${baseLabel} ${plateIndex + 1} - ${trimmed}` : `${baseLabel} ${plateIndex + 1}`;
 };
 
 const extractPlateBatchId = (label: unknown, plateIndex: number): string => {
@@ -1190,7 +1573,10 @@ const createDefaultDesignPlates = (): PlateConfig[] => [
   { label: formatPlateDisplayLabel(1, ''), leftName: '', rightName: '', notes: '', cells: createPlateCells() }
 ];
 
-const withControlSuffix = (prefix: string, sample: Extract<SampleType, 'M' | 'Z' | 'R'>): string => {
+const withControlSuffix = (
+  prefix: string,
+  sample: Extract<SampleType, 'X' | 'M' | 'Z' | 'R'>
+): string => {
   if (!prefix) {
     return sample;
   }
@@ -1201,10 +1587,186 @@ const withControlSuffix = (prefix: string, sample: Extract<SampleType, 'M' | 'Z'
 };
 
 const getCryosectionLabelForSample = (label: string, sample: SampleType): string => {
-  if (sample === 'M' || sample === 'Z' || sample === 'R') {
+  if (sample === 'X' || sample === 'M' || sample === 'Z' || sample === 'R') {
     return withControlSuffix(label, sample);
   }
   return label;
+};
+
+const getLayoutPlateAssignment = (assignments: PlateAssignment[], plateIndex: number): PlateAssignment =>
+  assignments[plateIndex] ?? {
+    split: false,
+    segments: [createPlateSegmentAssignment(null), createPlateSegmentAssignment(null)]
+  };
+
+const getLayoutSegmentIndexForColumn = (assignment: PlateAssignment, colIndex: number): 0 | 1 =>
+  assignment.split && colIndex >= 6 ? 1 : 0;
+
+const getLayoutCryosectionName = (
+  cryosections: CryosectionConfig[],
+  cryoIndex: number | null | undefined
+): string => {
+  if (
+    cryoIndex === null ||
+    cryoIndex === undefined ||
+    cryoIndex < 0 ||
+    cryoIndex >= cryosections.length
+  ) {
+    return '';
+  }
+  return cryosections[cryoIndex]?.name ?? '';
+};
+
+const buildEffectiveStartsForLayout = (
+  mode: 'positive' | 'negative',
+  cryosectionCount: number,
+  plateCount: number,
+  designPlates: PlateConfig[],
+  plateAssignments: PlateAssignment[]
+) => {
+  const nextByCryo = Array.from({ length: MAX_CRYOSECTIONS }, () => DEFAULT_MICROSAMPLE_START);
+  return Array.from({ length: MAX_PLATES }, (_, plateIndex) => {
+    const assignment = getLayoutPlateAssignment(plateAssignments, plateIndex);
+    const plate = designPlates[plateIndex];
+    const starts = [DEFAULT_MICROSAMPLE_START, DEFAULT_MICROSAMPLE_START] as [number, number];
+    if (plateIndex >= plateCount) {
+      return starts;
+    }
+    const segmentIndexes: Array<0 | 1> = assignment.split ? [0, 1] : [0];
+    for (const segmentIndex of segmentIndexes) {
+      const segment = assignment.segments[segmentIndex];
+      const cryoIndex = segment?.cryoIndex;
+      const manualKey = mode === 'positive' ? 'positiveManual' : 'negativeManual';
+      const startKey = mode === 'positive' ? 'positiveStart' : 'negativeStart';
+      const current =
+        cryoIndex !== null &&
+        cryoIndex !== undefined &&
+        cryoIndex >= 0 &&
+        cryoIndex < cryosectionCount
+          ? segment?.[manualKey]
+            ? segment[startKey] || DEFAULT_MICROSAMPLE_START
+            : nextByCryo[cryoIndex]
+          : segment?.[startKey] || DEFAULT_MICROSAMPLE_START;
+      starts[segmentIndex] = current;
+      if (
+        cryoIndex === null ||
+        cryoIndex === undefined ||
+        cryoIndex < 0 ||
+        cryoIndex >= cryosectionCount ||
+        !plate
+      ) {
+        continue;
+      }
+      const startCol = assignment.split && segmentIndex === 1 ? 6 : 0;
+      const endCol = assignment.split && segmentIndex === 0 ? 5 : 11;
+      if (mode === 'positive') {
+        let positiveCount = 0;
+        for (let rowIndex = 0; rowIndex < PLATE_ROWS.length; rowIndex += 1) {
+          for (let colIndex = startCol; colIndex <= endCol; colIndex += 1) {
+            if ((plate.cells[rowIndex]?.[colIndex] ?? DEFAULT_SAMPLE) === 'P') {
+              positiveCount += 1;
+            }
+          }
+        }
+        nextByCryo[cryoIndex] = current + positiveCount;
+        continue;
+      }
+      let membraneCount = 0;
+      let positiveControlCount = 0;
+      let lysisCount = 0;
+      let reactionCount = 0;
+      for (let rowIndex = 0; rowIndex < PLATE_ROWS.length; rowIndex += 1) {
+        for (let colIndex = startCol; colIndex <= endCol; colIndex += 1) {
+          const sample = plate.cells[rowIndex]?.[colIndex] ?? DEFAULT_SAMPLE;
+          if (sample === 'X') {
+            positiveControlCount += 1;
+          } else if (sample === 'M') {
+            membraneCount += 1;
+          } else if (sample === 'Z') {
+            lysisCount += 1;
+          } else if (sample === 'R') {
+            reactionCount += 1;
+          }
+        }
+      }
+      nextByCryo[cryoIndex] =
+        current + Math.max(positiveControlCount, membraneCount, lysisCount, reactionCount);
+    }
+    if (!assignment.split) {
+      starts[1] = starts[0];
+    }
+    return starts;
+  });
+};
+
+const buildMicrosampleCodeMapForLayout = (
+  cryosectionCount: number,
+  plateCount: number,
+  cryosections: CryosectionConfig[],
+  designPlates: PlateConfig[],
+  plateAssignments: PlateAssignment[]
+) => {
+  const map = new Map<string, string>();
+  const effectivePositiveStarts = buildEffectiveStartsForLayout(
+    'positive',
+    cryosectionCount,
+    plateCount,
+    designPlates,
+    plateAssignments
+  );
+  const effectiveNegativeStarts = buildEffectiveStartsForLayout(
+    'negative',
+    cryosectionCount,
+    plateCount,
+    designPlates,
+    plateAssignments
+  );
+  const createCounters = (positiveStart: number, negativeStart: number) =>
+    ({
+      P: positiveStart - 1,
+      X: negativeStart - 1,
+      M: negativeStart - 1,
+      Z: negativeStart - 1,
+      R: negativeStart - 1,
+      N: 0
+    } as Record<SampleType, number>);
+  const counters = Array.from({ length: MAX_PLATES }, (_, plateIndex) => {
+    const assignment = getLayoutPlateAssignment(plateAssignments, plateIndex);
+    return assignment.segments.map((_, segmentIndex) =>
+      createCounters(
+        effectivePositiveStarts[plateIndex]?.[segmentIndex] ?? DEFAULT_MICROSAMPLE_START,
+        effectiveNegativeStarts[plateIndex]?.[segmentIndex] ?? DEFAULT_MICROSAMPLE_START
+      )
+    ) as [Record<SampleType, number>, Record<SampleType, number>];
+  });
+
+  designPlates.slice(0, plateCount).forEach((plate, plateIndex) => {
+    const assignment = getLayoutPlateAssignment(plateAssignments, plateIndex);
+    for (let colIndex = 0; colIndex < PLATE_COLS.length; colIndex += 1) {
+      const segmentIndex = getLayoutSegmentIndexForColumn(assignment, colIndex);
+      const segment = assignment.segments[segmentIndex];
+      const label = getLayoutCryosectionName(cryosections, segment?.cryoIndex);
+      for (let rowIndex = 0; rowIndex < PLATE_ROWS.length; rowIndex += 1) {
+        const sample = plate.cells[rowIndex]?.[colIndex] ?? DEFAULT_SAMPLE;
+        const key = `${plateIndex}-${rowIndex}-${colIndex}`;
+        if (sample === DISABLED_SAMPLE || segment?.cryoIndex === null || !label.trim()) {
+          map.set(key, '');
+          continue;
+        }
+        counters[plateIndex][segmentIndex][sample] += 1;
+        let prefix = label;
+        if (sample === 'X' || sample === 'M' || sample === 'Z' || sample === 'R') {
+          prefix = withControlSuffix(prefix, sample);
+        }
+        map.set(
+          key,
+          `${prefix}${String(counters[plateIndex][segmentIndex][sample]).padStart(3, '0')}`
+        );
+      }
+    }
+  });
+
+  return map;
 };
 
 const normalizeCollectionData = (raw: unknown): CollectionCell[][] => {
@@ -1430,6 +1992,8 @@ const normalizeOverviewContours = (raw: unknown): OverviewContour[] => {
         color,
         visible: record.visible !== false,
         closed: record.closed === true,
+        coordinateSpace: record.coordinateSpace === 'layer' ? 'layer' : 'stage',
+        layer: record.layer === 'post' ? 'post' : 'pre',
         points
       } as OverviewContour;
     })
@@ -1547,6 +2111,316 @@ const normalizeHistory = (raw: unknown): HistoryEntry[] => {
       } as HistoryEntry;
     })
     .filter(Boolean) as HistoryEntry[];
+};
+
+const normalizeWorkspaceCutPoint = (
+  raw: unknown,
+  defaults: Pick<WorkspaceSessionImport, 'id' | 'label' | 'color'>
+): WorkspaceCutPoint | null => {
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+  const record = raw as Record<string, unknown>;
+  const x = typeof record.x === 'number' ? record.x : Number(record.x);
+  const y = typeof record.y === 'number' ? record.y : Number(record.y);
+  const plateIndex = typeof record.plateIndex === 'number' ? record.plateIndex : Number(record.plateIndex);
+  const rowIndex = typeof record.rowIndex === 'number' ? record.rowIndex : Number(record.rowIndex);
+  const colIndex = typeof record.colIndex === 'number' ? record.colIndex : Number(record.colIndex);
+  if (
+    !Number.isFinite(x) ||
+    !Number.isFinite(y) ||
+    !Number.isFinite(plateIndex) ||
+    !Number.isFinite(rowIndex) ||
+    !Number.isFinite(colIndex)
+  ) {
+    return null;
+  }
+  return {
+    id:
+      typeof record.id === 'string' && record.id.trim().length > 0
+        ? record.id
+        : `${defaults.id}:${plateIndex}-${rowIndex}-${colIndex}`,
+    x,
+    y,
+    sample: normalizeSampleType(record.sample),
+    code: typeof record.code === 'string' && record.code.trim().length > 0 ? record.code.trim() : undefined,
+    preImage:
+      typeof record.preImage === 'string' && record.preImage.trim().length > 0
+        ? record.preImage.trim()
+        : undefined,
+    cutImage:
+      typeof record.cutImage === 'string' && record.cutImage.trim().length > 0
+        ? record.cutImage.trim()
+        : undefined,
+    inferred: record.inferred === true,
+    inferenceConfirmed: record.inferenceConfirmed === true,
+    plateLabel:
+      typeof record.plateLabel === 'string' && record.plateLabel.trim().length > 0
+        ? record.plateLabel.trim()
+        : `Plate ${Math.floor(plateIndex) + 1}`,
+    well: typeof record.well === 'string' ? record.well : '',
+    elementUiId:
+      typeof record.elementUiId === 'string' && record.elementUiId.trim().length > 0
+        ? record.elementUiId.trim()
+        : undefined,
+    imageUiIds: Array.isArray(record.imageUiIds)
+      ? record.imageUiIds.filter((value): value is string => typeof value === 'string')
+      : [],
+    plateIndex: Math.floor(plateIndex),
+    rowIndex: Math.floor(rowIndex),
+    colIndex: Math.floor(colIndex),
+    sessionId:
+      typeof record.sessionId === 'string' && record.sessionId.trim().length > 0
+        ? record.sessionId.trim()
+        : defaults.id,
+    sessionLabel:
+      typeof record.sessionLabel === 'string' && record.sessionLabel.trim().length > 0
+        ? record.sessionLabel.trim()
+        : defaults.label,
+    sessionColor:
+      typeof record.sessionColor === 'string' && record.sessionColor.trim().length > 0
+        ? record.sessionColor.trim()
+        : defaults.color,
+    sourceCryosection:
+      typeof record.sourceCryosection === 'string' ? record.sourceCryosection : '',
+    editable: record.editable === true,
+    imported: record.imported !== false
+  };
+};
+
+const normalizeWorkspaceMetadataRow = (raw: unknown): MetadataRow | null => {
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+  const record = raw as Record<string, unknown>;
+  const plateIndex = typeof record.plateIndex === 'number' ? record.plateIndex : Number(record.plateIndex);
+  const rowIndex = typeof record.rowIndex === 'number' ? record.rowIndex : Number(record.rowIndex);
+  const colIndex = typeof record.colIndex === 'number' ? record.colIndex : Number(record.colIndex);
+  const cryoIndex = typeof record.cryoIndex === 'number' ? record.cryoIndex : Number(record.cryoIndex);
+  if (
+    !Number.isFinite(plateIndex) ||
+    !Number.isFinite(rowIndex) ||
+    !Number.isFinite(colIndex) ||
+    !Number.isFinite(cryoIndex)
+  ) {
+    return null;
+  }
+  const contourDistancesRaw =
+    record.contourDistances && typeof record.contourDistances === 'object'
+      ? (record.contourDistances as Record<string, unknown>)
+      : {};
+  const contourDistances: Record<string, number | undefined> = {};
+  for (const [key, value] of Object.entries(contourDistancesRaw)) {
+    const numeric = typeof value === 'number' ? value : Number(value);
+    if (Number.isFinite(numeric)) {
+      contourDistances[key] = numeric;
+    }
+  }
+  const coordStatusRaw = typeof record.coordStatus === 'string' ? record.coordStatus : 'pending';
+  return {
+    key:
+      typeof record.key === 'string' && record.key.trim().length > 0
+        ? record.key.trim()
+        : `meta-${plateIndex}-${rowIndex}-${colIndex}`,
+    cellKey:
+      typeof record.cellKey === 'string' && record.cellKey.trim().length > 0
+        ? record.cellKey.trim()
+        : `${plateIndex}-${rowIndex}-${colIndex}`,
+    well: typeof record.well === 'string' ? record.well : `${colIndex + 1}${PLATE_ROWS[rowIndex] ?? ''}`,
+    plateLabel:
+      typeof record.plateLabel === 'string' && record.plateLabel.trim().length > 0
+        ? record.plateLabel.trim()
+        : `Plate ${Math.floor(plateIndex) + 1}`,
+    batch: typeof record.batch === 'string' ? record.batch : '',
+    halfLabel: typeof record.halfLabel === 'string' ? record.halfLabel : '',
+    half: record.half === 'right' ? 'right' : 'left',
+    cryoIndex: Math.floor(cryoIndex),
+    sample: normalizeSampleType(record.sample),
+    plateIndex: Math.floor(plateIndex),
+    rowIndex: Math.floor(rowIndex),
+    colIndex: Math.floor(colIndex),
+    coordStatus:
+      coordStatusRaw === 'ok' ||
+      coordStatusRaw === 'bad' ||
+      coordStatusRaw === 'warn' ||
+      coordStatusRaw === 'pending'
+        ? coordStatusRaw
+        : 'pending',
+    inferred: record.inferred === true,
+    inferenceConfirmed: record.inferenceConfirmed === true,
+    manualAssigned: record.manualAssigned === true,
+    autoCode: typeof record.autoCode === 'string' ? record.autoCode : '',
+    code: typeof record.code === 'string' ? record.code : '',
+    number: typeof record.number === 'string' ? record.number : '',
+    collection: typeof record.collection === 'string' ? record.collection : '',
+    collectionMethod:
+      typeof record.collectionMethod === 'string'
+        ? record.collectionMethod
+        : COLLECTION_METHOD_OPTIONS[0],
+    shape: typeof record.shape === 'string' ? record.shape : '',
+    images: typeof record.images === 'string' ? record.images : '',
+    pixelX:
+      typeof record.pixelX === 'number' && Number.isFinite(record.pixelX) ? record.pixelX : undefined,
+    pixelY:
+      typeof record.pixelY === 'number' && Number.isFinite(record.pixelY) ? record.pixelY : undefined,
+    xCoord:
+      typeof record.xCoord === 'number' && Number.isFinite(record.xCoord) ? record.xCoord : undefined,
+    yCoord:
+      typeof record.yCoord === 'number' && Number.isFinite(record.yCoord) ? record.yCoord : undefined,
+    size:
+      typeof record.size === 'number' && Number.isFinite(record.size) ? record.size : undefined,
+    notes: typeof record.notes === 'string' ? record.notes : '',
+    contourDistances
+  };
+};
+
+const normalizeWorkspaceSessionImport = (
+  raw: unknown,
+  index: number
+): WorkspaceSessionImport | null => {
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+  const record = raw as Record<string, unknown>;
+  const id =
+    typeof record.id === 'string' && record.id.trim().length > 0
+      ? record.id.trim()
+      : `workspace:import:${index}`;
+  const label =
+    typeof record.label === 'string' && record.label.trim().length > 0
+      ? record.label.trim()
+      : `Session ${index + 1}`;
+  const color =
+    typeof record.color === 'string' && record.color.trim().length > 0
+      ? record.color.trim()
+      : WORKSPACE_SESSION_COLORS[index % WORKSPACE_SESSION_COLORS.length];
+  const plateCount = normalizePlateCount(record.plateCount);
+  const cutPointsRaw =
+    record.cutPointsByCryoKey && typeof record.cutPointsByCryoKey === 'object'
+      ? (record.cutPointsByCryoKey as Record<string, unknown>)
+      : {};
+  const cutPointsByCryoKey: Record<string, WorkspaceCutPoint[]> = {};
+  for (const [cryoKey, value] of Object.entries(cutPointsRaw)) {
+    if (!Array.isArray(value)) {
+      continue;
+    }
+    const normalizedPoints = value
+      .map((item) => normalizeWorkspaceCutPoint(item, { id, label, color }))
+      .filter((point): point is WorkspaceCutPoint => point !== null);
+    if (normalizedPoints.length > 0) {
+      cutPointsByCryoKey[cryoKey] = normalizedPoints;
+    }
+  }
+  const designPlatesRaw = Array.isArray(record.designPlates) ? record.designPlates : [];
+  const designPlates = [
+    normalizePlateData(designPlatesRaw[0], formatPlateDisplayLabel(0, '')),
+    normalizePlateData(designPlatesRaw[1], formatPlateDisplayLabel(1, ''))
+  ];
+  const collectionPlatesRaw = Array.isArray(record.collectionPlates) ? record.collectionPlates : [];
+  const collectionPlateNotesRaw = Array.isArray(record.collectionPlateNotes)
+    ? record.collectionPlateNotes
+    : [];
+  const collectionMetadataRaw =
+    record.collectionMetadata && typeof record.collectionMetadata === 'object'
+      ? (record.collectionMetadata as Record<string, unknown>)
+      : {};
+  const metadataRowsRaw = Array.isArray(record.metadataRows) ? record.metadataRows : [];
+  const metadataRows = metadataRowsRaw
+    .map((item) => normalizeWorkspaceMetadataRow(item))
+    .filter((item): item is MetadataRow => item !== null);
+  return {
+    id,
+    filePath: typeof record.filePath === 'string' ? record.filePath : '',
+    label,
+    color,
+    plateCount,
+    plateAssignments: Array.isArray(record.plateAssignments)
+      ? (record.plateAssignments
+          .map((item) => {
+            if (!item || typeof item !== 'object') {
+              return null;
+            }
+            const plate = item as Record<string, unknown>;
+            const segmentsRaw = Array.isArray(plate.segments) ? plate.segments : [];
+            const parseSegment = (segment: unknown): PlateSegmentAssignment => {
+              const entry =
+                segment && typeof segment === 'object' ? (segment as Record<string, unknown>) : {};
+              const cryoIndex =
+                entry.cryoIndex === null || entry.cryoIndex === undefined
+                  ? null
+                  : Number.parseInt(String(entry.cryoIndex), 10);
+              return {
+                cryoIndex:
+                  Number.isFinite(cryoIndex) && cryoIndex >= 0 && cryoIndex < MAX_CRYOSECTIONS
+                    ? cryoIndex
+                    : null,
+                positiveStart: Number.parseInt(String(entry.positiveStart ?? ''), 10) || DEFAULT_MICROSAMPLE_START,
+                positiveManual: entry.positiveManual !== false,
+                negativeStart: Number.parseInt(String(entry.negativeStart ?? ''), 10) || DEFAULT_MICROSAMPLE_START,
+                negativeManual: entry.negativeManual !== false
+              };
+            };
+            return {
+              split: plate.split === true,
+              segments: [
+                parseSegment(segmentsRaw[0]),
+                parseSegment(segmentsRaw[1])
+              ] as [PlateSegmentAssignment, PlateSegmentAssignment]
+            };
+          })
+          .filter((item): item is PlateAssignment => item !== null) as PlateAssignment[])
+      : createPlateAssignments(),
+    designPlates,
+    collectionPlates: [
+      normalizeCollectionData(collectionPlatesRaw[0]),
+      normalizeCollectionData(collectionPlatesRaw[1])
+    ],
+    collectionPlateNotes: [
+      typeof collectionPlateNotesRaw[0] === 'string'
+        ? collectionPlateNotesRaw[0]
+        : designPlates[0]?.notes ?? '',
+      typeof collectionPlateNotesRaw[1] === 'string'
+        ? collectionPlateNotesRaw[1]
+        : designPlates[1]?.notes ?? ''
+    ],
+    collectionColumnAreas: normalizeCollectionColumnAreas(record.collectionColumnAreas),
+    collectionMetadata: {
+      collectionMethod:
+        typeof collectionMetadataRaw.collectionMethod === 'string' &&
+        COLLECTION_METHOD_OPTIONS.includes(collectionMetadataRaw.collectionMethod)
+          ? collectionMetadataRaw.collectionMethod
+          : COLLECTION_METHOD_OPTIONS[0],
+      encodingMode:
+        collectionMetadataRaw.encodingMode === 'legacy' ||
+        collectionMetadataRaw.encodingMode === 'corrected'
+          ? (collectionMetadataRaw.encodingMode as CollectionEncodingMode)
+          : EMPTY_COLLECTION_METADATA.encodingMode,
+      date: typeof collectionMetadataRaw.date === 'string' ? collectionMetadataRaw.date : '',
+      temperature:
+        typeof collectionMetadataRaw.temperature === 'string'
+          ? collectionMetadataRaw.temperature
+          : '',
+      humidity:
+        typeof collectionMetadataRaw.humidity === 'string' ? collectionMetadataRaw.humidity : '',
+      notes: typeof collectionMetadataRaw.notes === 'string' ? collectionMetadataRaw.notes : '',
+      startTime:
+        typeof collectionMetadataRaw.startTime === 'string'
+          ? collectionMetadataRaw.startTime
+          : '',
+      endTime:
+        typeof collectionMetadataRaw.endTime === 'string' ? collectionMetadataRaw.endTime : '',
+      startTimeManual: collectionMetadataRaw.startTimeManual === true,
+      endTimeManual: collectionMetadataRaw.endTimeManual === true
+    },
+    metadataRows,
+    cryosectionNames: Array.isArray(record.cryosectionNames)
+      ? record.cryosectionNames.filter((value): value is string => typeof value === 'string')
+      : [],
+    cutPointsByCryoKey,
+    warnings: Array.isArray(record.warnings)
+      ? record.warnings.filter((value): value is string => typeof value === 'string')
+      : []
+  };
 };
 
 const normalizeCsvData = (raw: unknown): CsvCell[][] => {
@@ -1817,10 +2691,10 @@ const computeCsvIssues = (csvPlates: CsvCell[][][], plates: PlateConfig[]) => {
           continue;
         }
         const hasSample = csvCell.size !== undefined && csvCell.size !== null;
-        if ((sampleType === 'Z' || sampleType === 'R') && hasSample) {
+        if ((sampleType === 'X' || sampleType === 'Z' || sampleType === 'R') && hasSample) {
           issues.controlHasSample += 1;
         }
-        if (sampleType !== 'Z' && sampleType !== 'R' && !hasSample) {
+        if (sampleType !== 'X' && sampleType !== 'Z' && sampleType !== 'R' && !hasSample) {
           issues.missingSample += 1;
         }
       }
@@ -1903,7 +2777,10 @@ const parseCsvText = (text: string): RawCsvRow[] => {
   return rows;
 };
 
-const parseCollectionImportCsv = (text: string): CollectionImportRow[] => {
+const parseCollectionImportCsv = (
+  text: string,
+  keywordLibrary: KeywordLibrary
+): CollectionImportRow[] => {
   const lines = text.split(/\r?\n/).filter((line) => line.trim().length > 0);
   if (lines.length === 0) {
     return [];
@@ -1924,10 +2801,14 @@ const parseCollectionImportCsv = (text: string): CollectionImportRow[] => {
     }
     return undefined;
   };
-  const plateIndex = getHeaderIndex('Plate', 'LMBatch');
-  const wellIndex = getHeaderIndex('Well', 'PlatePosition');
-  const areaIndex = getHeaderIndex('Area', 'Size');
-  const collectionIndex = getHeaderIndex('Collection', 'Notes Collection');
+  const plateIndex = getHeaderIndex(...getKeywordCandidates(keywordLibrary, 'plate', ['LMBatch']));
+  const wellIndex = getHeaderIndex(...getKeywordCandidates(keywordLibrary, 'well', ['PlatePosition']));
+  const areaIndex = getHeaderIndex(
+    ...getKeywordCandidates(keywordLibrary, 'area', [getKeywordLabel(keywordLibrary, 'size'), 'Size'])
+  );
+  const collectionIndex = getHeaderIndex(
+    ...getKeywordCandidates(keywordLibrary, 'collection', ['Notes Collection'])
+  );
 
   if (
     plateIndex === undefined ||
@@ -1936,7 +2817,13 @@ const parseCollectionImportCsv = (text: string): CollectionImportRow[] => {
     collectionIndex === undefined
   ) {
     throw new Error(
-      'Collection CSV must contain Plate/LMBatch, Well/PlatePosition, Area/Size and Collection/Notes Collection columns.'
+      `Collection CSV must contain ${getKeywordLabel(keywordLibrary, 'plate')}/LMBatch, ${getKeywordLabel(
+        keywordLibrary,
+        'well'
+      )}/PlatePosition, ${getKeywordLabel(keywordLibrary, 'area')}/${getKeywordLabel(
+        keywordLibrary,
+        'size'
+      )} and ${getKeywordLabel(keywordLibrary, 'collection')}/Notes Collection columns.`
     );
   }
 
@@ -1993,6 +2880,29 @@ const formatWellDisplay = (value: string): string => {
     return `${letterFirst[2]}${letterFirst[1]}`;
   }
   return value;
+};
+
+const formatWellCsvDisplay = (value: string): string => {
+  const parsed = parseCollectionImportWell(value);
+  if (!parsed) {
+    return value;
+  }
+  return `${PLATE_COLS[parsed.colIndex]}${PLATE_ROWS[parsed.rowIndex]}`;
+};
+
+const compareMetadataRowsByCsvWell = (a: MetadataRow, b: MetadataRow): number => {
+  if (a.plateIndex !== b.plateIndex) {
+    return a.plateIndex - b.plateIndex;
+  }
+  if (a.colIndex !== b.colIndex) {
+    return a.colIndex - b.colIndex;
+  }
+  if (a.rowIndex !== b.rowIndex) {
+    return a.rowIndex - b.rowIndex;
+  }
+  return formatWellCsvDisplay(a.well).localeCompare(formatWellCsvDisplay(b.well), undefined, {
+    numeric: true
+  });
 };
 
 const parseCollectionImportCounts = (
@@ -2382,8 +3292,17 @@ export default function App(): JSX.Element {
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [designLocked, setDesignLocked] = useState(false);
+  const [keywordLibrary, setKeywordLibrary] = useState<KeywordLibrary>(() =>
+    loadStoredKeywordLibrary()
+  );
   const [activeTab, setActiveTab] = useState<
-    'project' | 'design' | 'viewer' | 'metadata' | 'collection' | 'overview'
+    | 'project'
+    | 'design'
+    | 'viewer'
+    | 'metadata'
+    | 'collection'
+    | 'overview'
+    | 'keywordLibrary'
   >('project');
   const [imageOpacity, setImageOpacity] = useState(1);
   const [micronsPerPixel, setMicronsPerPixel] = useState(DEFAULT_MICRONS_PER_PIXEL);
@@ -2426,11 +3345,11 @@ export default function App(): JSX.Element {
   const [lastSavedSnapshot, setLastSavedSnapshot] = useState<string>('');
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(true);
   const [syncSnapshotOnNext, setSyncSnapshotOnNext] = useState(false);
-  const [availableUsers, setAvailableUsers] = useState<string[]>(DEFAULT_SESSION_USERS);
+  const [availableUsers, setAvailableUsers] = useState<string[]>(() => loadStoredUserDirectory());
   const [selectedSessionUsers, setSelectedSessionUsers] = useState<string[]>([]);
   const [newUserInput, setNewUserInput] = useState('');
   const [userPromptOpen, setUserPromptOpen] = useState(true);
-  const [pendingAction, setPendingAction] = useState<'new' | 'load' | null>(null);
+  const [pendingAction, setPendingAction] = useState<'new' | 'load' | 'loadMultiple' | null>(null);
   const [legacyCollectionPrompt, setLegacyCollectionPrompt] = useState<null | {
     version: string;
   }>(null);
@@ -2439,6 +3358,24 @@ export default function App(): JSX.Element {
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [closePromptOpen, setClosePromptOpen] = useState(false);
+  const [workspaceImports, setWorkspaceImports] = useState<WorkspaceSessionImport[]>([]);
+  const [workspaceSessionVisibility, setWorkspaceSessionVisibility] = useState<Record<string, boolean>>({});
+  const [workspaceLoadPrompt, setWorkspaceLoadPrompt] = useState<WorkspaceLoadPromptState | null>(
+    null
+  );
+  const [workspaceDesignCollapsed, setWorkspaceDesignCollapsed] = useState<Record<string, boolean>>(
+    {}
+  );
+  const [workspaceCollectionCollapsed, setWorkspaceCollectionCollapsed] = useState<
+    Record<string, boolean>
+  >({});
+  const [workspaceMetadataCollapsed, setWorkspaceMetadataCollapsed] = useState<Record<string, boolean>>(
+    {}
+  );
+  const [workspacePrimaryColor, setWorkspacePrimaryColor] = useState(
+    WORKSPACE_SESSION_COLORS[0]
+  );
+  const [workspacePrimaryFilePath, setWorkspacePrimaryFilePath] = useState<string | null>(null);
   const [metadataSearch, setMetadataSearch] = useState('');
   const [metadataSearchScope, setMetadataSearchScope] = useState<MetadataSearchScope>('all');
   const [cutPointSearch, setCutPointSearch] = useState('');
@@ -2467,6 +3404,18 @@ export default function App(): JSX.Element {
     useState<OrphanAssignmentPromptState | null>(null);
   const [manualCoordinatePrompt, setManualCoordinatePrompt] =
     useState<ManualCoordinatePromptState | null>(null);
+  const [cropCsvOutsidePrompt, setCropCsvOutsidePrompt] = useState<null | {
+    baseName: string;
+    insideRows: OverviewCropCsvRow[];
+    outsideRows: OverviewCropCsvRow[];
+    allRows: OverviewCropCsvRow[];
+    controlRows: OverviewCropCsvRow[];
+  }>(null);
+  const [cropCsvControlPrompt, setCropCsvControlPrompt] = useState<null | {
+    baseName: string;
+    baseRows: OverviewCropCsvRow[];
+    controlRows: OverviewCropCsvRow[];
+  }>(null);
   const [detachCryoPromptOpen, setDetachCryoPromptOpen] = useState(false);
   const [selectedOrphanAssignmentTargetKey, setSelectedOrphanAssignmentTargetKey] = useState<
     string | null
@@ -2503,6 +3452,7 @@ export default function App(): JSX.Element {
     createCryoStateArray(() => true)
   );
   const [metadataP, setMetadataP] = useState(true);
+  const [metadataX, setMetadataX] = useState(true);
   const [metadataM, setMetadataM] = useState(true);
   const [metadataZ, setMetadataZ] = useState(true);
   const [metadataR, setMetadataR] = useState(true);
@@ -2525,6 +3475,9 @@ export default function App(): JSX.Element {
   const [metadataExportOrder, setMetadataExportOrder] = useState<string[]>([]);
   const [draggedMetadataColumnKey, setDraggedMetadataColumnKey] = useState<string | null>(null);
   const [draggedMetadataExportKey, setDraggedMetadataExportKey] = useState<string | null>(null);
+  const [metadataCodeOverrides, setMetadataCodeOverrides] = useState<Record<string, string>>({});
+  const [editingMetadataCodeKey, setEditingMetadataCodeKey] = useState<string | null>(null);
+  const [metadataCodeDraft, setMetadataCodeDraft] = useState('');
   const [metadataNotes, setMetadataNotes] = useState<Record<string, string>>({});
   const [randomAssignmentSettings, setRandomAssignmentSettings] =
     useState<RandomAssignmentSettings>({
@@ -2569,30 +3522,79 @@ export default function App(): JSX.Element {
     createCryoStateArray(() => null)
   );
 
-  useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem(USER_DIRECTORY_KEY);
-      if (!raw) {
-        setAvailableUsers(DEFAULT_SESSION_USERS);
-        return;
-      }
-      const parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed)) {
-        setAvailableUsers(DEFAULT_SESSION_USERS);
-        return;
-      }
-      const values = parsed
-        .filter((item): item is string => typeof item === 'string')
-        .filter((item) => item.trim() !== 'Nanna Guan');
-      const mergedWithoutNanna = normalizeUserList([...DEFAULT_SESSION_USERS, ...values]).filter(
-        (item) => item !== 'Nanna Gaun'
-      );
-      const merged = [...mergedWithoutNanna, 'Nanna Gaun'];
-      setAvailableUsers(merged.length ? merged : DEFAULT_SESSION_USERS);
-    } catch {
-      setAvailableUsers(DEFAULT_SESSION_USERS);
-    }
+  const keywordLabel = useCallback(
+    (key: KeywordKey) => getKeywordLabel(keywordLibrary, key),
+    [keywordLibrary]
+  );
+  const keywordLabelLower = useCallback(
+    (key: KeywordKey) => keywordLabel(key).toLowerCase(),
+    [keywordLabel]
+  );
+  const keywordPlural = useCallback(
+    (key: KeywordKey) => {
+      const label = keywordLabel(key);
+      return /s$/i.test(label) ? label : `${label}s`;
+    },
+    [keywordLabel]
+  );
+  const formatLocalPlateLabel = useCallback(
+    (plateIndex: number, plateBatchId: string) => {
+      const plateLabel = keywordLabel('plate');
+      const displayLabel =
+        normalizeHeaderKey(plateLabel) === normalizeHeaderKey(DEFAULT_KEYWORD_LIBRARY.plate)
+          ? 'PLATE'
+          : plateLabel;
+      return formatPlateDisplayLabel(plateIndex, plateBatchId, displayLabel);
+    },
+    [keywordLabel]
+  );
+  const sampleOptionLabel = useCallback(
+    (type: SampleType) => {
+      const keyByType: Record<SampleType, KeywordKey> = {
+        P: 'positiveSample',
+        X: 'positiveControl',
+        M: 'membraneControl',
+        Z: 'lysisControl',
+        R: 'reactionControl',
+        N: 'notUsed'
+      };
+      return `${keywordLabel(keyByType[type])} (${type})`;
+    },
+    [keywordLabel]
+  );
+  const updateKeywordLibraryEntry = useCallback((key: KeywordKey, value: string) => {
+    setKeywordLibrary((prev) => ({ ...prev, [key]: value }));
   }, []);
+  const saveKeywordLibrary = useCallback(() => {
+    const normalized = normalizeKeywordLibrary(keywordLibrary);
+    try {
+      window.localStorage.setItem(KEYWORD_LIBRARY_STORAGE_KEY, JSON.stringify(normalized));
+      setKeywordLibrary(normalized);
+      setStatus('Keyword library saved locally.');
+    } catch {
+      setStatus('Could not save keyword library locally.');
+    }
+  }, [keywordLibrary]);
+  const resetKeywordLibrary = useCallback(() => {
+    const next = { ...DEFAULT_KEYWORD_LIBRARY };
+    try {
+      window.localStorage.removeItem(KEYWORD_LIBRARY_STORAGE_KEY);
+    } catch {
+      // local storage is best effort only
+    }
+    setKeywordLibrary(next);
+    setStatus('Keyword library reset to original.');
+  }, []);
+  const keywordGroups = useMemo(
+    () =>
+      KEYWORD_DEFINITIONS.reduce((groups, definition) => {
+        const entries = groups.get(definition.group) ?? [];
+        entries.push(definition);
+        groups.set(definition.group, entries);
+        return groups;
+      }, new Map<string, KeywordDefinition[]>()),
+    []
+  );
 
   useEffect(() => {
     try {
@@ -2682,6 +3684,17 @@ export default function App(): JSX.Element {
       setStatusPrompt(null);
     }
   }, [activeTab, statusPrompt]);
+
+  useEffect(() => {
+    if (activeTab !== 'overview') {
+      if (cropCsvOutsidePrompt) {
+        setCropCsvOutsidePrompt(null);
+      }
+      if (cropCsvControlPrompt) {
+        setCropCsvControlPrompt(null);
+      }
+    }
+  }, [activeTab, cropCsvOutsidePrompt, cropCsvControlPrompt]);
 
   useEffect(() => {
     const onMouseUp = () => {
@@ -2863,27 +3876,25 @@ export default function App(): JSX.Element {
         nextPlateCount,
         nextAssignments,
         nextCsvFilesByCryo,
-        nextCsvSourceGroupIdsByCryo
+        nextCsvSourceGroupIdsByCryo,
+        designPlates
       );
     },
-    [csvFilesByCryo, csvSourceGroupIdsByCryo, plateAssignments, plateCount]
+    [csvFilesByCryo, csvSourceGroupIdsByCryo, designPlates, plateAssignments, plateCount]
   );
   const getCryoSourceSlotForPlateCell = useCallback(
     (cryoIndex: number, plateIndex: number, rowIndex: number, colIndex: number) => {
       const { targets } = getCryoCsvTargets(cryoIndex);
       const target = targets.find(
-        (item) =>
-          item.plateIndex === plateIndex &&
-          colIndex >= item.startCol &&
-          colIndex <= item.endCol
+        (item) => item.plateIndex === plateIndex && item.colIndex === colIndex
       );
       if (!target) {
         return undefined;
       }
-      const sourceCol = target.sourceStartCol + (colIndex - target.startCol);
-      if (!Number.isFinite(sourceCol) || sourceCol < 0 || sourceCol >= PLATE_COLS.length) {
+      if (!target.enabledRows.includes(rowIndex)) {
         return undefined;
       }
+      const sourceCol = target.sourceCol;
       return {
         sourceCol,
         slot: sourceCol * PLATE_ROWS.length + rowIndex
@@ -2970,12 +3981,15 @@ export default function App(): JSX.Element {
         const startCol = assignment.split && segmentIndex === 1 ? 6 : 0;
         const endCol = assignment.split && segmentIndex === 0 ? 5 : 11;
         let membraneCount = 0;
+        let positiveControlCount = 0;
         let lysisCount = 0;
         let reactionCount = 0;
         for (let rowIndex = 0; rowIndex < PLATE_ROWS.length; rowIndex += 1) {
           for (let colIndex = startCol; colIndex <= endCol; colIndex += 1) {
             const sample = plate.cells[rowIndex]?.[colIndex] ?? DEFAULT_SAMPLE;
-            if (sample === 'M') {
+            if (sample === 'X') {
+              positiveControlCount += 1;
+            } else if (sample === 'M') {
               membraneCount += 1;
             } else if (sample === 'Z') {
               lysisCount += 1;
@@ -2984,7 +3998,8 @@ export default function App(): JSX.Element {
             }
           }
         }
-        nextByCryo[cryoIndex] = current + Math.max(membraneCount, lysisCount, reactionCount);
+        nextByCryo[cryoIndex] =
+          current + Math.max(positiveControlCount, membraneCount, lysisCount, reactionCount);
       }
       if (!assignment.split) {
         starts[1] = starts[0];
@@ -3007,29 +4022,7 @@ export default function App(): JSX.Element {
   const overview = overviewByCryo[activeCryosection] ?? createOverviewState();
   const stagePosition = cryosections[activeCryosection]?.stagePosition ?? DEFAULT_STAGE_POSITION;
   const getOverviewLayerRect = useCallback(
-    (layer: OverviewLayerState) => {
-      if (!stagePosition) {
-        return null;
-      }
-      const stageSpec = STAGE_POSITIONS[stagePosition - 1];
-      if (!stageSpec) {
-        return null;
-      }
-      const baseX = stageSpec.slide.tl.x;
-      const baseY = stageSpec.slide.tl.y;
-      const baseW = stageSpec.slide.br.x - stageSpec.slide.tl.x;
-      const baseH = stageSpec.slide.br.y - stageSpec.slide.tl.y;
-      return {
-        baseX,
-        baseY,
-        baseW,
-        baseH,
-        x: baseX + layer.offsetX,
-        y: baseY + layer.offsetY,
-        w: baseW * layer.scaleX,
-        h: baseH * layer.scaleY
-      };
-    },
+    (layer: OverviewLayerState) => getOverviewLayerRectForStagePosition(stagePosition, layer),
     [stagePosition]
   );
   const activeOverviewLayer = overview.activeLayer === 'pre' ? overview.pre : overview.post;
@@ -3064,6 +4057,48 @@ export default function App(): JSX.Element {
     overviewContourInsertPreviewByCryo[activeCryosection] ?? null;
   const overviewContourPreview = overviewContourPreviewByCryo[activeCryosection] ?? null;
   const overviewExport = overviewExportByCryo[activeCryosection] ?? null;
+
+  useEffect(() => {
+    setOverviewContoursByCryo((prev) => {
+      let changed = false;
+      const next = prev.map((contours, cryoIndex) => {
+        const overviewState = overviewByCryo[cryoIndex] ?? createOverviewState();
+        const stagePositionForCryo =
+          cryosections[cryoIndex]?.stagePosition ?? DEFAULT_STAGE_POSITION;
+        const targetLayer = overviewState.activeLayer;
+        const layerRect = getOverviewLayerRectForStagePosition(
+          stagePositionForCryo,
+          overviewState[targetLayer]
+        );
+        if (!layerRect) {
+          return contours;
+        }
+        let localChanged = false;
+        const migrated = contours.map((contour) => {
+          if (contour.coordinateSpace !== 'stage') {
+            return contour;
+          }
+          localChanged = true;
+          changed = true;
+          return {
+            ...contour,
+            coordinateSpace: 'layer' as const,
+            layer: targetLayer,
+            points: contour.points.map((point) =>
+              toOverviewContourPoint(
+                { ...contour, coordinateSpace: 'layer', layer: targetLayer },
+                point,
+                overviewState,
+                stagePositionForCryo
+              )
+            )
+          };
+        });
+        return localChanged ? migrated : contours;
+      });
+      return changed ? next : prev;
+    });
+  }, [cryosections, overviewByCryo]);
 
   useEffect(() => {
     if (
@@ -3332,6 +4367,9 @@ export default function App(): JSX.Element {
   const loadProjectHandlerRef = useRef<
     (usersOverride?: string[], filePathOverride?: string) => Promise<void>
   >(async () => undefined);
+  const loadMultipleProjectsHandlerRef = useRef<(usersOverride?: string[]) => Promise<void>>(
+    async () => undefined
+  );
   const newProjectHandlerRef = useRef<(usersOverride?: string[]) => void>(() => undefined);
   const undoOverviewRef = useRef<() => Promise<void>>(async () => undefined);
   const undoManualPointCreationRef = useRef<() => void>(() => undefined);
@@ -3362,7 +4400,7 @@ export default function App(): JSX.Element {
     key: 'label' | 'notes',
     value: string
   ) => {
-    if (designLocked) {
+    if (designInteractionLocked) {
       return;
     }
     setDesignPlates((prev) =>
@@ -3457,7 +4495,7 @@ export default function App(): JSX.Element {
   useEffect(() => {
     setDesignPlates((prev) =>
       prev.map((plate, plateIndex) => {
-        const nextLabel = formatPlateDisplayLabel(plateIndex, plateBatchIds[plateIndex] ?? '');
+        const nextLabel = formatLocalPlateLabel(plateIndex, plateBatchIds[plateIndex] ?? '');
         const assignment = getPlateAssignment(plateIndex);
         const nextLeft = getPlateSegmentLabel(plateIndex, 0);
         const nextRight = assignment.split ? getPlateSegmentLabel(plateIndex, 1) : nextLeft;
@@ -3471,7 +4509,7 @@ export default function App(): JSX.Element {
         return { ...plate, label: nextLabel, leftName: nextLeft, rightName: nextRight };
       })
     );
-  }, [plateBatchIds, getPlateAssignment, getPlateSegmentLabel]);
+  }, [formatLocalPlateLabel, plateBatchIds, getPlateAssignment, getPlateSegmentLabel]);
 
   useEffect(() => {
     setPlateAssignments((prev) => {
@@ -3523,7 +4561,7 @@ export default function App(): JSX.Element {
     rowIndex: number,
     colIndex: number
   ) => {
-    if (designLocked) {
+    if (designInteractionLocked) {
       return;
     }
     if (event.button !== 0) {
@@ -3612,10 +4650,9 @@ export default function App(): JSX.Element {
       rows: RawCsvRow[],
       targets: Array<{
         plateIndex: number;
-        startCol: number;
-        endCol: number;
-        sourceStartCol: number;
-        sourceEndCol: number;
+        colIndex: number;
+        sourceCol: number;
+        enabledRows: number[];
       }>
     ) => {
       const resultPlates = Array.from({ length: visiblePlateCount }, () => createCsvCells());
@@ -3704,24 +4741,25 @@ export default function App(): JSX.Element {
       }
 
       for (const target of targets) {
-        const sourceStartCol = Math.max(0, target.sourceStartCol);
-        const sourceEndCol = Math.min(11, target.sourceEndCol);
-        for (
-          let sourceColIndex = sourceStartCol;
-          sourceColIndex <= sourceEndCol;
-          sourceColIndex += 1
+        const sourceColIndex = target.sourceCol;
+        const colIndex = target.colIndex;
+        if (
+          target.plateIndex >= resultPlates.length ||
+          sourceColIndex < 0 ||
+          sourceColIndex >= sourceColumns.length
         ) {
-          const offset = sourceColIndex - target.sourceStartCol;
-          const colIndex = target.startCol + offset;
-          if (colIndex > target.endCol || target.plateIndex >= resultPlates.length) {
-            break;
+          continue;
+        }
+        const enabledRows = new Set(target.enabledRows);
+        for (let rowIndex = 0; rowIndex < PLATE_ROWS.length; rowIndex += 1) {
+          if (!enabledRows.has(rowIndex)) {
+            resultPlates[target.plateIndex][rowIndex][colIndex] = {};
+            continue;
           }
-          for (let rowIndex = 0; rowIndex < PLATE_ROWS.length; rowIndex += 1) {
-            const sourceCell = sourceColumns[sourceColIndex]?.[rowIndex];
-            resultPlates[target.plateIndex][rowIndex][colIndex] = sourceCell
-              ? { ...sourceCell }
-              : {};
-          }
+          const sourceCell = sourceColumns[sourceColIndex]?.[rowIndex];
+          resultPlates[target.plateIndex][rowIndex][colIndex] = sourceCell
+            ? { ...sourceCell }
+            : {};
         }
       }
 
@@ -3935,7 +4973,7 @@ export default function App(): JSX.Element {
     return parts.length ? `Validation: ${parts.join(' · ')}` : '';
   }, [csvIssues]);
 
-  const codeMap = useMemo(() => {
+  const autoCodeMap = useMemo(() => {
     const map = new Map<string, string>();
     const createCounters = (
       assignment: PlateSegmentAssignment,
@@ -3944,6 +4982,7 @@ export default function App(): JSX.Element {
     ) =>
       ({
         P: positiveStart - 1,
+        X: negativeStart - 1,
         M: negativeStart - 1,
         Z: negativeStart - 1,
         R: negativeStart - 1,
@@ -3982,7 +5021,7 @@ export default function App(): JSX.Element {
           counters[plateIndex][segmentIndex][sample] += 1;
 
           let prefix = label;
-          if (sample === 'M' || sample === 'Z' || sample === 'R') {
+          if (sample === 'X' || sample === 'M' || sample === 'Z' || sample === 'R') {
             prefix = withControlSuffix(prefix, sample);
           }
 
@@ -4003,7 +5042,32 @@ export default function App(): JSX.Element {
     effectiveNegativeStarts
   ]);
 
-  const cutPoints = useMemo(() => {
+  const codeMap = useMemo(() => {
+    const next = new Map(autoCodeMap);
+    for (const [key, value] of Object.entries(metadataCodeOverrides)) {
+      const normalized = value.trim();
+      const autoCode = autoCodeMap.get(key) ?? '';
+      if (!autoCode || !normalized) {
+        continue;
+      }
+      next.set(key, normalized);
+    }
+    return next;
+  }, [autoCodeMap, metadataCodeOverrides]);
+
+  const primaryWorkspaceSessionLabel = useMemo(() => {
+    const trimmedProjectName = projectName.trim();
+    if (trimmedProjectName) {
+      return trimmedProjectName;
+    }
+    const fileName = lastSavedPath?.split(/[\\/]/).pop()?.replace(/\.(lmd|mlmd)$/i, '');
+    return fileName || 'Current session';
+  }, [lastSavedPath, projectName]);
+
+  const workspaceReadOnly = workspaceImports.length > 0;
+  const designInteractionLocked = designLocked || workspaceReadOnly;
+
+  const primaryCutPoints = useMemo(() => {
     if (!coordinatesReady) {
       return [];
     }
@@ -4014,24 +5078,7 @@ export default function App(): JSX.Element {
     if (!elementMap) {
       return [];
     }
-    const result: Array<{
-      id: string;
-      x: number;
-      y: number;
-      sample: SampleType;
-      code?: string;
-      preImage?: string;
-      cutImage?: string;
-      inferred: boolean;
-      inferenceConfirmed: boolean;
-      plateLabel: string;
-      well: string;
-      elementUiId?: string;
-      imageUiIds: string[];
-      plateIndex: number;
-      rowIndex: number;
-      colIndex: number;
-    }> = [];
+    const result: WorkspaceCutPoint[] = [];
     for (let plateIndex = 0; plateIndex < visiblePlateCount; plateIndex += 1) {
       for (let rowIndex = 0; rowIndex < PLATE_ROWS.length; rowIndex += 1) {
         for (let colIndex = 0; colIndex < PLATE_COLS.length; colIndex += 1) {
@@ -4134,7 +5181,13 @@ export default function App(): JSX.Element {
               imageUiIds,
               plateIndex,
               rowIndex,
-              colIndex
+              colIndex,
+              sessionId: PRIMARY_WORKSPACE_SESSION_ID,
+              sessionLabel: primaryWorkspaceSessionLabel,
+              sessionColor: workspacePrimaryColor,
+              sourceCryosection: getCryosectionName(activeCryosection),
+              editable: true,
+              imported: false
             });
           }
         }
@@ -4153,8 +5206,33 @@ export default function App(): JSX.Element {
     codeMap,
     coordinateCache,
     coordinateOverridesByCryo,
+    getCryosectionName,
+    primaryWorkspaceSessionLabel,
+    workspacePrimaryColor,
     visiblePlateCount
   ]);
+
+  const workspaceImportedCutPoints = useMemo(() => {
+    const cryoKey = normalizeCryosectionMatchKey(getCryosectionName(activeCryosection));
+    if (!cryoKey || workspaceImports.length === 0) {
+      return [] as WorkspaceCutPoint[];
+    }
+    return workspaceImports.flatMap((session) => {
+      if (workspaceSessionVisibility[session.id] === false) {
+        return [];
+      }
+      return session.cutPointsByCryoKey[cryoKey] ?? [];
+    });
+  }, [activeCryosection, getCryosectionName, workspaceImports, workspaceSessionVisibility]);
+
+  const cutPoints = useMemo(() => {
+    const primaryVisible =
+      workspaceImports.length === 0 || workspaceSessionVisibility[PRIMARY_WORKSPACE_SESSION_ID] !== false;
+    return [
+      ...(primaryVisible ? primaryCutPoints : []),
+      ...workspaceImportedCutPoints
+    ];
+  }, [primaryCutPoints, workspaceImportedCutPoints, workspaceImports.length, workspaceSessionVisibility]);
 
   const filteredCutPoints = useMemo(() => cutPoints, [cutPoints]);
 
@@ -4442,12 +5520,57 @@ export default function App(): JSX.Element {
       return rows;
     }
     return rows.filter((row) =>
-      [row.plateLabel, row.well, row.code ?? '', row.preImage ?? '', row.cutImage ?? '']
+      [
+        row.sessionLabel,
+        row.plateLabel,
+        row.well,
+        row.code ?? '',
+        row.preImage ?? '',
+        row.cutImage ?? ''
+      ]
         .join(' ')
         .toLowerCase()
         .includes(query)
     );
   }, [filteredCutPoints, cutPointSearch, selectedCutIds]);
+
+  const workspaceSessionEntries = useMemo(() => {
+    if (workspaceImports.length === 0) {
+      return [];
+    }
+    const activeCryoKey = normalizeCryosectionMatchKey(getCryosectionName(activeCryosection));
+    const primaryCount = primaryCutPoints.filter(
+      (point) => normalizeCryosectionMatchKey(point.sourceCryosection) === activeCryoKey
+    ).length;
+    return [
+      {
+        id: PRIMARY_WORKSPACE_SESSION_ID,
+        label: primaryWorkspaceSessionLabel,
+        color: workspacePrimaryColor,
+        count: primaryCount
+      },
+      ...workspaceImports.map((item) => ({
+        id: item.id,
+        label: item.label,
+        color: item.color,
+        count: (item.cutPointsByCryoKey[activeCryoKey] ?? []).length
+      }))
+    ];
+  }, [
+    activeCryosection,
+    getCryosectionName,
+    primaryCutPoints,
+    primaryWorkspaceSessionLabel,
+    workspacePrimaryColor,
+    workspaceImports
+  ]);
+
+  const workspaceLoadPromptSessions = useMemo(() => {
+    if (!workspaceLoadPrompt) {
+      return [] as WorkspaceSessionImport[];
+    }
+    return workspaceLoadPrompt.sessions;
+  }, [workspaceLoadPrompt]);
 
   const metadataRows = useMemo(() => {
     return designPlates.slice(0, visiblePlateCount).flatMap((plate, plateIndex) =>
@@ -4538,7 +5661,7 @@ export default function App(): JSX.Element {
           }
           const coordPresent = xCoord !== undefined && yCoord !== undefined;
           const controlHasCollectionInfo =
-            (sample === 'Z' || sample === 'R') && collectionLabel.length > 0;
+            (sample === 'X' || sample === 'Z' || sample === 'R') && collectionLabel.length > 0;
           const inferred = csvCell.inferred === true;
           const inferenceConfirmed = csvCell.inferenceConfirmed === true;
           let coordStatus: 'ok' | 'bad' | 'pending' | 'warn' = 'pending';
@@ -4551,7 +5674,7 @@ export default function App(): JSX.Element {
           } else if (inferred && coordPresent && !inferenceConfirmed) {
             coordStatus = 'warn';
           } else if (coordinatesReady) {
-            if (sample === 'Z' || sample === 'R') {
+            if (sample === 'X' || sample === 'Z' || sample === 'R') {
               coordStatus = coordPresent ? 'bad' : 'ok';
             } else {
               coordStatus = coordPresent ? 'ok' : 'bad';
@@ -4560,11 +5683,21 @@ export default function App(): JSX.Element {
           const contourDistances: Record<string, number | undefined> = {};
           if (xCoord !== undefined && yCoord !== undefined) {
             const cryoContours = overviewContoursByCryo[cryoIndex] ?? [];
+            const cryoOverview = overviewByCryo[cryoIndex] ?? createOverviewState();
+            const cryoStagePosition = cryosections[cryoIndex]?.stagePosition ?? DEFAULT_STAGE_POSITION;
             for (const contour of cryoContours) {
+              const contourPoints = getOverviewContourStagePoints(
+                contour,
+                cryoOverview,
+                cryoStagePosition
+              );
+              if (contourPoints.length === 0) {
+                continue;
+              }
               const distance = closestDistanceToPolyline(
                 xCoord,
                 yCoord,
-                contour.points,
+                contourPoints,
                 contour.closed
               );
               if (distance !== undefined) {
@@ -4575,10 +5708,13 @@ export default function App(): JSX.Element {
               }
             }
           }
-          const code = codeMap.get(`${plateIndex}-${rowIndex}-${colIndex}`) ?? '';
+          const cellKey = `${plateIndex}-${rowIndex}-${colIndex}`;
+          const autoCode = autoCodeMap.get(cellKey) ?? '';
+          const code = codeMap.get(cellKey) ?? '';
           const number = code ? code.slice(-3) : '';
           return {
             key: `meta-${plateIndex}-${row}-${col}`,
+            cellKey,
             well: `${col}${row}`,
             plateLabel: plate.label || `Plate ${plateIndex + 1}`,
             batch: projectName,
@@ -4593,6 +5729,7 @@ export default function App(): JSX.Element {
             inferred,
             inferenceConfirmed,
             manualAssigned,
+            autoCode,
             code,
             number,
             collection: collectionLabel,
@@ -4616,6 +5753,7 @@ export default function App(): JSX.Element {
     collectionPlates,
     mergedCsvPlates,
     codeMap,
+    autoCodeMap,
     micronsPerPixel,
     coordinatesReady,
     coordinateCache,
@@ -4630,7 +5768,66 @@ export default function App(): JSX.Element {
     getPlateSegmentLabel,
     getSegmentIndexForColumn,
     getCellCryoIndex,
-    overviewContoursByCryo
+    overviewContoursByCryo,
+    overviewByCryo,
+    cryosections
+  ]);
+
+  const overviewNoCoordinateControlRows = useMemo<OverviewCropCsvRow[]>(() => {
+    const rows: OverviewCropCsvRow[] = [];
+    const activeCryoKey = normalizeCryosectionMatchKey(getCryosectionName(activeCryosection));
+    const appendRow = (row: MetadataRow, idPrefix: string) => {
+      const hasCoordinates = Number.isFinite(row.xCoord) && Number.isFinite(row.yCoord);
+      if (!isNoCoordinateControlSample(row.sample) || hasCoordinates) {
+        return;
+      }
+      rows.push({
+        id: `${idPrefix}:no-coordinate-control:${row.cellKey}`,
+        well: row.well,
+        code: row.code,
+        plateLabel: row.plateLabel
+      });
+    };
+
+    const primaryVisible =
+      workspaceImports.length === 0 ||
+      workspaceSessionVisibility[PRIMARY_WORKSPACE_SESSION_ID] !== false;
+    if (primaryVisible) {
+      for (const row of metadataRows) {
+        if (getCellCryoIndex(row.plateIndex, row.colIndex) === activeCryosection) {
+          appendRow(row, PRIMARY_WORKSPACE_SESSION_ID);
+        }
+      }
+    }
+
+    if (activeCryoKey) {
+      for (const session of workspaceImports) {
+        if (workspaceSessionVisibility[session.id] === false) {
+          continue;
+        }
+        for (const row of session.metadataRows) {
+          const assignment = session.plateAssignments[row.plateIndex];
+          const segmentIndex: 0 | 1 = assignment?.split === true && row.colIndex >= 6 ? 1 : 0;
+          const rowCryoIndex = assignment?.segments[segmentIndex]?.cryoIndex;
+          const rowCryoName =
+            rowCryoIndex === null || rowCryoIndex === undefined
+              ? ''
+              : session.cryosectionNames[rowCryoIndex] ?? '';
+          if (normalizeCryosectionMatchKey(rowCryoName) === activeCryoKey) {
+            appendRow(row, session.id);
+          }
+        }
+      }
+    }
+
+    return rows;
+  }, [
+    activeCryosection,
+    getCellCryoIndex,
+    getCryosectionName,
+    metadataRows,
+    workspaceImports,
+    workspaceSessionVisibility
   ]);
 
   const orphanAssignmentTargets = useMemo(() => {
@@ -4638,6 +5835,7 @@ export default function App(): JSX.Element {
       .filter(
         (row) =>
           row.cryoIndex === activeCryosection &&
+          row.sample !== 'X' &&
           row.sample !== 'Z' &&
           row.sample !== 'R' &&
           row.sample !== 'N' &&
@@ -4770,8 +5968,12 @@ export default function App(): JSX.Element {
   );
 
   const baseMetadataColumns = useMemo<MetadataDisplayColumn[]>(
-    () => METADATA_COLUMNS.map((column) => ({ key: column.key, label: column.label })),
-    []
+    () =>
+      METADATA_COLUMNS.map((column) => ({
+        key: column.key,
+        label: getMetadataColumnLabel(column.key, keywordLibrary)
+      })),
+    [keywordLibrary]
   );
   const orderedBaseMetadataColumns = useMemo<MetadataDisplayColumn[]>(
     () => orderMetadataColumns(baseMetadataColumns, metadataColumnOrder),
@@ -4802,11 +6004,7 @@ export default function App(): JSX.Element {
   );
 
   const getMetadataColumnValue = useCallback(
-    (
-      row: (typeof metadataRows)[number],
-      column: string,
-      mode: 'search' | 'export' = 'search'
-    ) => {
+    (row: MetadataRow, column: string, mode: 'search' | 'export' = 'search') => {
       if (isContourNameColumnKey(column)) {
         const value = row.contourDistances?.[column];
         if (value === undefined) {
@@ -4833,7 +6031,9 @@ export default function App(): JSX.Element {
           }
           return `${row.coordStatus}${row.inferred ? ' inferred' : ''}${row.manualAssigned ? ' manual' : ''}`;
         case 'well':
-          return row.well;
+          return mode === 'export'
+            ? formatWellCsvDisplay(row.well)
+            : `${row.well} ${formatWellDisplay(row.well)} ${formatWellCsvDisplay(row.well)}`;
         case 'plate':
           return row.plateLabel;
         case 'batch':
@@ -4888,60 +6088,154 @@ export default function App(): JSX.Element {
     []
   );
 
+  const filterMetadataRowsForDisplay = useCallback(
+    (rows: MetadataRow[]) => {
+      const query = metadataSearch.trim().toLowerCase();
+      return rows.filter((row) => {
+        if (row.plateIndex === 0 && !metadataPlate1) {
+          return false;
+        }
+        if (row.plateIndex === 1 && !metadataPlate2) {
+          return false;
+        }
+        if (metadataCryoFilters[row.cryoIndex] === false) {
+          return false;
+        }
+        if (row.sample === 'P' && !metadataP) {
+          return false;
+        }
+        if (row.sample === 'X' && !metadataX) {
+          return false;
+        }
+        if (row.sample === 'M' && !metadataM) {
+          return false;
+        }
+        if (row.sample === 'Z' && !metadataZ) {
+          return false;
+        }
+        if (row.sample === 'R' && !metadataR) {
+          return false;
+        }
+        if (row.sample === 'N' && !metadataN) {
+          return false;
+        }
+        if (!query) {
+          return true;
+        }
+        if (metadataSearchScope === 'all') {
+          return allMetadataColumns.some((column) =>
+            getMetadataColumnValue(row, column.key).toLowerCase().includes(query)
+          );
+        }
+        return getMetadataColumnValue(row, metadataSearchScope).toLowerCase().includes(query);
+      });
+    },
+    [
+      allMetadataColumns,
+      getMetadataColumnValue,
+      metadataCryoFilters,
+      metadataM,
+      metadataN,
+      metadataP,
+      metadataPlate1,
+      metadataPlate2,
+      metadataR,
+      metadataSearch,
+      metadataSearchScope,
+      metadataX,
+      metadataZ
+    ]
+  );
+
   const filteredMetadataRows = useMemo(() => {
-    const query = metadataSearch.trim().toLowerCase();
-    return metadataRows.filter((row) => {
-      if (row.plateIndex === 0 && !metadataPlate1) {
-        return false;
-      }
-      if (row.plateIndex === 1 && !metadataPlate2) {
-        return false;
-      }
-      if (metadataCryoFilters[row.cryoIndex] === false) {
-        return false;
-      }
-      if (row.sample === 'P' && !metadataP) {
-        return false;
-      }
-      if (row.sample === 'M' && !metadataM) {
-        return false;
-      }
-      if (row.sample === 'Z' && !metadataZ) {
-        return false;
-      }
-      if (row.sample === 'R' && !metadataR) {
-        return false;
-      }
-      if (row.sample === 'N' && !metadataN) {
-        return false;
-      }
-      if (!query) {
-        return true;
-      }
-      if (metadataSearchScope === 'all') {
-        return allMetadataColumns.some((column) =>
-          getMetadataColumnValue(row, column.key).toLowerCase().includes(query)
-        );
-      }
-      return getMetadataColumnValue(row, metadataSearchScope).toLowerCase().includes(query);
-    });
+    return filterMetadataRowsForDisplay(metadataRows);
+  }, [metadataRows, filterMetadataRowsForDisplay]);
+
+  const workspaceSessionPanels = useMemo(() => {
+    if (!workspaceReadOnly) {
+      return [] as Array<{
+        id: string;
+        label: string;
+        color: string;
+        filePath?: string;
+        plateCount: 1 | 2;
+        plateAssignments: PlateAssignment[];
+        designPlates: PlateConfig[];
+        collectionPlates: CollectionCell[][][];
+        collectionPlateNotes: [string, string];
+        collectionColumnAreas: [string[], string[]];
+        collectionMetadata: CollectionMetadata;
+        metadataRows: MetadataRow[];
+      }>;
+    }
+    return [
+      {
+        id: PRIMARY_WORKSPACE_SESSION_ID,
+        label: primaryWorkspaceSessionLabel,
+        color: workspacePrimaryColor,
+        filePath: workspacePrimaryFilePath ?? lastSavedPath ?? undefined,
+        plateCount: visiblePlateCount,
+        plateAssignments,
+        designPlates,
+        collectionPlates,
+        collectionPlateNotes,
+        collectionColumnAreas,
+        collectionMetadata,
+        metadataRows: filterMetadataRowsForDisplay(metadataRows)
+      },
+      ...workspaceImports.map((session) => ({
+        id: session.id,
+        label: session.label,
+        color: session.color,
+        filePath: session.filePath,
+        plateCount: session.plateCount,
+        plateAssignments: session.plateAssignments,
+        designPlates: session.designPlates,
+        collectionPlates: session.collectionPlates,
+        collectionPlateNotes: session.collectionPlateNotes,
+        collectionColumnAreas: session.collectionColumnAreas,
+        collectionMetadata: session.collectionMetadata,
+        metadataRows: filterMetadataRowsForDisplay(session.metadataRows)
+      }))
+    ];
   }, [
+    collectionColumnAreas,
+    collectionMetadata,
+    collectionPlateNotes,
+    collectionPlates,
+    designPlates,
+    filterMetadataRowsForDisplay,
+    lastSavedPath,
     metadataRows,
-    metadataSearch,
-    metadataSearchScope,
-    metadataPlate1,
-    metadataPlate2,
-    metadataCryoFilters,
-    metadataP,
-    metadataM,
-    metadataZ,
-    metadataR,
-    metadataN,
-    getMetadataColumnValue,
-    allMetadataColumns
+    plateAssignments,
+    primaryWorkspaceSessionLabel,
+    visiblePlateCount,
+    workspaceImports,
+    workspacePrimaryColor,
+    workspacePrimaryFilePath,
+    workspaceReadOnly
   ]);
 
+  const toggleWorkspaceSessionCollapse = useCallback(
+    (
+      section: 'design' | 'collection' | 'metadata',
+      sessionId: string
+    ) => {
+      const setter =
+        section === 'design'
+          ? setWorkspaceDesignCollapsed
+          : section === 'collection'
+            ? setWorkspaceCollectionCollapsed
+            : setWorkspaceMetadataCollapsed;
+      setter((prev) => ({ ...prev, [sessionId]: !(prev[sessionId] ?? false) }));
+    },
+    []
+  );
+
   const updateMetadataNote = (key: string, value: string) => {
+    if (workspaceReadOnly) {
+      return;
+    }
     setMetadataNotes((prev) => {
       if (prev[key] === value) {
         return prev;
@@ -4949,6 +6243,55 @@ export default function App(): JSX.Element {
       return { ...prev, [key]: value };
     });
   };
+
+  const updateMetadataCodeOverride = useCallback(
+    (key: string, value: string, autoCode: string) => {
+      const normalized = value.trim();
+      setMetadataCodeOverrides((prev) => {
+        const current = prev[key] ?? '';
+        if (!autoCode || normalized === autoCode) {
+          if (!(key in prev)) {
+            return prev;
+          }
+          const next = { ...prev };
+          delete next[key];
+          return next;
+        }
+        if (current === normalized) {
+          return prev;
+        }
+        return { ...prev, [key]: normalized };
+      });
+    },
+    []
+  );
+
+  const startEditingMetadataCode = useCallback((key: string, currentCode: string) => {
+    if (workspaceReadOnly) {
+      return;
+    }
+    setEditingMetadataCodeKey(key);
+    setMetadataCodeDraft(currentCode);
+  }, [workspaceReadOnly]);
+
+  const cancelEditingMetadataCode = useCallback(() => {
+    setEditingMetadataCodeKey(null);
+    setMetadataCodeDraft('');
+  }, []);
+
+  const commitEditingMetadataCode = useCallback(
+    (key: string, autoCode: string) => {
+      if (workspaceReadOnly) {
+        setEditingMetadataCodeKey(null);
+        setMetadataCodeDraft('');
+        return;
+      }
+      updateMetadataCodeOverride(key, metadataCodeDraft, autoCode);
+      setEditingMetadataCodeKey(null);
+      setMetadataCodeDraft('');
+    },
+    [metadataCodeDraft, updateMetadataCodeOverride, workspaceReadOnly]
+  );
 
   const updateCsvCellForCryo = useCallback(
     (
@@ -5105,8 +6448,8 @@ export default function App(): JSX.Element {
         images: undefined,
         preImage: undefined,
         cutImage: undefined,
-        pixelX: undefined,
-        pixelY: undefined,
+        pixelX: isManualCoordinateOnly ? undefined : cell.pixelX,
+        pixelY: isManualCoordinateOnly ? undefined : cell.pixelY,
         inferred: false,
         inferenceConfirmed: false,
         manualAssigned: false
@@ -5574,6 +6917,9 @@ export default function App(): JSX.Element {
   }, []);
 
   const updateCollectionColumnArea = (plateIndex: number, colIndex: number, value: string) => {
+    if (workspaceReadOnly) {
+      return;
+    }
     const digits = value.replace(/\D/g, '').slice(0, 4);
     setCollectionColumnWarning(null);
     if ((collectionColumnAreas[plateIndex]?.[colIndex] ?? '') !== digits) {
@@ -5659,6 +7005,9 @@ export default function App(): JSX.Element {
     new Date().toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
   const markCollectionEdited = () => {
+    if (workspaceReadOnly) {
+      return;
+    }
     const now = getCollectionTimeStamp();
     setCollectionMetadata((prev) => ({
       ...prev,
@@ -5671,6 +7020,9 @@ export default function App(): JSX.Element {
     key: 'collectionMethod' | 'date' | 'temperature' | 'humidity' | 'notes',
     value: string
   ) => {
+    if (workspaceReadOnly) {
+      return;
+    }
     const now = getCollectionTimeStamp();
     setCollectionMetadata((prev) => ({
       ...prev,
@@ -5681,6 +7033,9 @@ export default function App(): JSX.Element {
   };
 
   const updateCollectionTimeField = (key: 'startTime' | 'endTime', value: string) => {
+    if (workspaceReadOnly) {
+      return;
+    }
     setCollectionMetadata((prev) => ({
       ...prev,
       [key]: value,
@@ -5703,9 +7058,20 @@ export default function App(): JSX.Element {
           return parsed - 1;
         }
       }
+      const customPlateKey = normalizeHeaderKey(keywordLabel('plate'));
+      const normalizedPlateNumber = normalizeHeaderKey(trimmed);
+      const customNumberedMatch = customPlateKey
+        ? normalizedPlateNumber.match(new RegExp(`^${customPlateKey}(\\d+)$`))
+        : null;
+      if (customNumberedMatch) {
+        const parsed = Number.parseInt(customNumberedMatch[1], 10);
+        if (parsed >= 1 && parsed <= visiblePlateCount) {
+          return parsed - 1;
+        }
+      }
       const normalized = normalizeHeaderKey(trimmed);
       for (let plateIndex = 0; plateIndex < visiblePlateCount; plateIndex += 1) {
-        const label = designPlates[plateIndex]?.label || formatPlateDisplayLabel(plateIndex, '');
+        const label = designPlates[plateIndex]?.label || formatLocalPlateLabel(plateIndex, '');
         const batchId = plateBatchIds[plateIndex] ?? '';
         if (
           normalized === normalizeHeaderKey(label) ||
@@ -5716,10 +7082,14 @@ export default function App(): JSX.Element {
       }
       return undefined;
     },
-    [designPlates, plateBatchIds, visiblePlateCount]
+    [designPlates, formatLocalPlateLabel, keywordLabel, plateBatchIds, visiblePlateCount]
   );
 
   const handleImportCollectionCsv = async () => {
+    if (workspaceReadOnly) {
+      setStatus('Multi-session workspaces are read-only in Collection.');
+      return;
+    }
     if (!window.lifApi?.openCsv || !window.lifApi?.readCsv) {
       setError('Preload API unavailable. Check Electron preload setup.');
       setStatus('Preload API unavailable. Check Electron preload setup.');
@@ -5735,7 +7105,7 @@ export default function App(): JSX.Element {
 
     try {
       const text = await window.lifApi.readCsv(filePath);
-      const rows = parseCollectionImportCsv(text);
+      const rows = parseCollectionImportCsv(text, keywordLibrary);
       const nextCollectionPlates: [CollectionCell[][], CollectionCell[][]] = [
         collectionPlates[0].map((row) => row.map((cell) => ({ ...cell }))),
         collectionPlates[1].map((row) => row.map((cell) => ({ ...cell })))
@@ -5786,7 +7156,7 @@ export default function App(): JSX.Element {
             const currentArea = nextAreas[plateIndex][well.colIndex];
             if (currentArea && currentArea !== areaDigits) {
               issues.push(
-                `Conflicting Area values for ${designPlates[plateIndex]?.label || formatPlateDisplayLabel(plateIndex, plateBatchIds[plateIndex] ?? '')} column ${PLATE_COLS[well.colIndex]}.`
+                `Conflicting ${keywordLabelLower('area')} values for ${designPlates[plateIndex]?.label || formatLocalPlateLabel(plateIndex, plateBatchIds[plateIndex] ?? '')} ${keywordLabelLower('column')} ${PLATE_COLS[well.colIndex]}.`
               );
             } else if (currentArea !== areaDigits) {
               nextAreas[plateIndex][well.colIndex] = areaDigits;
@@ -5883,10 +7253,14 @@ export default function App(): JSX.Element {
     });
   };
 
+  const updateWorkspaceSessionVisibility = (sessionId: string, value: boolean) => {
+    setWorkspaceSessionVisibility((prev) => ({ ...prev, [sessionId]: value }));
+  };
+
   const controlCoordinateIssues = useMemo(() => {
     return metadataRows.filter(
       (row) =>
-        (row.sample === 'Z' || row.sample === 'R') &&
+        (row.sample === 'X' || row.sample === 'Z' || row.sample === 'R') &&
         row.xCoord !== undefined &&
         row.yCoord !== undefined
     ).length;
@@ -6142,6 +7516,8 @@ export default function App(): JSX.Element {
       color: pickOverviewContourColor(nextIndex - 1),
       visible: true,
       closed: false,
+      coordinateSpace: 'layer',
+      layer: overview.activeLayer,
       points: []
     };
     updateOverviewContours((contours) => [...contours, contour]);
@@ -6196,7 +7572,7 @@ export default function App(): JSX.Element {
   );
 
   const ensureUser = useCallback(
-    (action: 'new' | 'load', filePath?: string) => {
+    (action: 'new' | 'load' | 'loadMultiple', filePath?: string) => {
       if (selectedSessionUsers.length > 0) {
         return true;
       }
@@ -6399,14 +7775,17 @@ export default function App(): JSX.Element {
       w: exportTarget.w,
       h: exportTarget.h
     };
-    const cuts = overviewCutPoints
-      .filter((point) => pointInRect({ x: point.x, y: point.y }, rect))
-      .map((point) => {
+    const cuts: OverviewCropResult['cuts'] = [];
+    const insideRows: OverviewCropCsvRow[] = [];
+    const outsideRows: OverviewCropCsvRow[] = [];
+    const allRows: OverviewCropCsvRow[] = [];
+    for (const point of overviewCutPoints) {
+      if (pointInRect({ x: point.x, y: point.y }, rect)) {
         const px =
           (((point.x - layerRect.x) / layerRect.w) * imgW - sourceRectPx.x) * scaleX;
         const py =
           (((point.y - layerRect.y) / layerRect.h) * imgH - sourceRectPx.y) * scaleY;
-        return {
+        const cut = {
           id: point.id,
           well: point.well,
           code: point.code,
@@ -6414,9 +7793,32 @@ export default function App(): JSX.Element {
           x: px,
           y: py
         };
-      });
+        const row = { ...cut };
+        cuts.push(cut);
+        insideRows.push(row);
+        allRows.push(row);
+      } else {
+        const row = {
+          id: point.id,
+          well: point.well,
+          code: point.code,
+          plateLabel: point.plateLabel
+        };
+        outsideRows.push(row);
+        allRows.push(row);
+      }
+    }
     setErrorBanner(null);
-    return { rectPx, sourceRectPx, cuts, layer, bitmap: layerState.bitmap };
+    return {
+      rectPx,
+      sourceRectPx,
+      cuts,
+      insideRows,
+      outsideRows,
+      allRows,
+      layer,
+      bitmap: layerState.bitmap
+    };
   };
 
   const computeOverviewCrop = () => {
@@ -6561,28 +7963,30 @@ export default function App(): JSX.Element {
     setStatus(`Exported image: ${response.filePath.split(/[\\\\/]/).pop()}`);
   };
 
-  const handleExportCropCsv = async () => {
+  const exportOverviewCropCsv = async (rows: OverviewCropCsvRow[], baseName: string) => {
     if (!window.lifApi?.exportFile) {
       setStatus('Export not available.');
-      return;
+      return false;
     }
-    const result = buildOverviewCrop();
-    if (!result) {
-      return;
-    }
-    const cryoName = getCryosectionName(activeCryosection);
-    const baseName = safeFilename(cryoName || '', `Cryosection${activeCryosection + 1}`);
     const lines = [
-      ['Plate', 'Well', 'Microsample', 'PixelX', 'PixelY'].map(csvEscape).join(',')
+      [
+        keywordLabel('plate'),
+        keywordLabel('well'),
+        keywordLabel('microsample'),
+        keywordLabel('pixelX'),
+        keywordLabel('pixelY')
+      ]
+        .map(csvEscape)
+        .join(',')
     ];
-    for (const cut of result.cuts) {
+    for (const cut of rows) {
       lines.push(
         [
           cut.plateLabel ?? '',
-          cut.well ?? '',
+          cut.well ? formatWellCsvDisplay(cut.well) : '',
           cut.code ?? '',
-          Number.isFinite(cut.x) ? cut.x.toFixed(2) : '',
-          Number.isFinite(cut.y) ? cut.y.toFixed(2) : ''
+          typeof cut.x === 'number' && Number.isFinite(cut.x) ? cut.x.toFixed(2) : '',
+          typeof cut.y === 'number' && Number.isFinite(cut.y) ? cut.y.toFixed(2) : ''
         ]
           .map(csvEscape)
           .join(',')
@@ -6596,12 +8000,82 @@ export default function App(): JSX.Element {
     });
     if ('error' in response) {
       setStatus(response.error);
-      return;
+      return false;
     }
     if ('canceled' in response) {
-      return;
+      return false;
     }
     setStatus(`Exported CSV: ${response.filePath.split(/[\\\\/]/).pop()}`);
+    return true;
+  };
+
+  const continueOverviewCropCsvExport = async (
+    baseName: string,
+    rows: OverviewCropCsvRow[],
+    controlRows: OverviewCropCsvRow[]
+  ) => {
+    if (controlRows.length > 0) {
+      setCropCsvControlPrompt({
+        baseName,
+        baseRows: rows,
+        controlRows
+      });
+      return;
+    }
+    await exportOverviewCropCsv(rows, baseName);
+  };
+
+  const handleExportCropCsv = async () => {
+    if (!window.lifApi?.exportFile) {
+      setStatus('Export not available.');
+      return;
+    }
+    const result = buildOverviewCrop();
+    if (!result) {
+      return;
+    }
+    const cryoName = getCryosectionName(activeCryosection);
+    const baseName = safeFilename(cryoName || '', `Cryosection${activeCryosection + 1}`);
+    if (result.outsideRows.length > 0) {
+      setCropCsvOutsidePrompt({
+        baseName,
+        insideRows: result.insideRows,
+        outsideRows: result.outsideRows,
+        allRows: result.allRows,
+        controlRows: overviewNoCoordinateControlRows
+      });
+      return;
+    }
+    await continueOverviewCropCsvExport(
+      baseName,
+      result.insideRows,
+      overviewNoCoordinateControlRows
+    );
+  };
+
+  const handleCropCsvOutsideChoice = async (includeOutside: boolean) => {
+    if (!cropCsvOutsidePrompt) {
+      return;
+    }
+    const prompt = cropCsvOutsidePrompt;
+    setCropCsvOutsidePrompt(null);
+    await continueOverviewCropCsvExport(
+      prompt.baseName,
+      includeOutside ? prompt.allRows : prompt.insideRows,
+      prompt.controlRows
+    );
+  };
+
+  const handleCropCsvControlChoice = async (includeControls: boolean) => {
+    if (!cropCsvControlPrompt) {
+      return;
+    }
+    const prompt = cropCsvControlPrompt;
+    setCropCsvControlPrompt(null);
+    await exportOverviewCropCsv(
+      includeControls ? [...prompt.baseRows, ...prompt.controlRows] : prompt.baseRows,
+      prompt.baseName
+    );
   };
 
   const openMetadataExportPopup = useCallback(() => {
@@ -6626,7 +8100,8 @@ export default function App(): JSX.Element {
     const lines = [
       columnsToExport.map((column) => csvEscape(column.label)).join(',')
     ];
-    for (const row of filteredMetadataRows) {
+    const rowsToExport = filteredMetadataRows.slice().sort(compareMetadataRowsByCsvWell);
+    for (const row of rowsToExport) {
       lines.push(
         columnsToExport
           .map((column) => csvEscape(getMetadataColumnValue(row, column.key, 'export')))
@@ -6676,13 +8151,20 @@ export default function App(): JSX.Element {
     const split = isPlateSplit(plateIndex);
     const leftCryosection = getPlateSegmentLabel(plateIndex, 0);
     const rightCryosection = split ? getPlateSegmentLabel(plateIndex, 1) : leftCryosection;
-    lines.push(['Plate', plate.label || `Plate ${plateIndex + 1}`].map(csvEscape).join(','));
-    lines.push(['Cryosection left', leftCryosection].map(csvEscape).join(','));
-    lines.push(['Cryosection right', rightCryosection].map(csvEscape).join(','));
-    lines.push(['Notes', plate.notes].map(csvEscape).join(','));
+    lines.push([keywordLabel('plate'), plate.label || formatLocalPlateLabel(plateIndex, '')].map(csvEscape).join(','));
+    lines.push([`${keywordLabel('cryosection')} left`, leftCryosection].map(csvEscape).join(','));
+    lines.push([`${keywordLabel('cryosection')} right`, rightCryosection].map(csvEscape).join(','));
+    lines.push([keywordLabel('notes'), plate.notes].map(csvEscape).join(','));
     lines.push('');
     lines.push(
-      ['Well', 'Row', 'Column', 'SampleType', 'Cryosection', 'Microsample']
+      [
+        keywordLabel('well'),
+        keywordLabel('row'),
+        keywordLabel('column'),
+        keywordLabel('sampleType'),
+        keywordLabel('cryosection'),
+        keywordLabel('microsample')
+      ]
         .map(csvEscape)
         .join(',')
     );
@@ -6701,7 +8183,10 @@ export default function App(): JSX.Element {
       }
     }
 
-    const baseName = safeFilename(plate.label || `Plate${plateIndex + 1}`, `Plate${plateIndex + 1}`);
+    const baseName = safeFilename(
+      plate.label || `${keywordLabel('plate')}${plateIndex + 1}`,
+      `${keywordLabel('plate')}${plateIndex + 1}`
+    );
     const response = await window.lifApi.exportFile({
       data: lines.join('\n'),
       encoding: 'utf8',
@@ -6815,6 +8300,7 @@ export default function App(): JSX.Element {
         plate2: metadataPlate2,
         cryoFilters: metadataCryoFilters,
         sampleP: metadataP,
+        sampleX: metadataX,
         sampleM: metadataM,
         sampleZ: metadataZ,
         sampleR: metadataR,
@@ -6822,6 +8308,7 @@ export default function App(): JSX.Element {
         columns: metadataColumns,
         columnOrder: metadataColumnOrder
       },
+      metadataCodeOverrides,
       metadataNotes,
       viewSettings: {
         imageOpacity,
@@ -6872,12 +8359,14 @@ export default function App(): JSX.Element {
       metadataPlate2,
       metadataCryoFilters,
       metadataP,
+      metadataX,
       metadataM,
       metadataZ,
       metadataR,
       metadataN,
       metadataColumns,
       metadataColumnOrder,
+      metadataCodeOverrides,
       metadataNotes,
       imageOpacity,
       micronsPerPixel,
@@ -6901,20 +8390,739 @@ export default function App(): JSX.Element {
     ]
   );
 
-  const buildSavePayload = useCallback(
-    (sessionsOverride?: SessionEntry[], historyOverride?: HistoryEntry[]) => ({
+  const buildWorkspaceSnapshotPayload = useCallback(
+    (sessionsOverride?: SessionEntry[]) => ({
       ...buildBasePayload(sessionsOverride),
+      workspace: {
+        type: 'mlmd',
+        primarySession: {
+          label: primaryWorkspaceSessionLabel,
+          color: workspacePrimaryColor,
+          filePath: workspacePrimaryFilePath ?? undefined
+        },
+        imports: workspaceImports,
+        sessionVisibility: workspaceSessionVisibility
+      }
+    }),
+    [
+      buildBasePayload,
+      primaryWorkspaceSessionLabel,
+      workspaceImports,
+      workspacePrimaryColor,
+      workspacePrimaryFilePath,
+      workspaceSessionVisibility
+    ]
+  );
+
+  const buildCurrentSnapshotPayload = useCallback(
+    (sessionsOverride?: SessionEntry[]) =>
+      workspaceImports.length > 0
+        ? buildWorkspaceSnapshotPayload(sessionsOverride)
+        : buildBasePayload(sessionsOverride),
+    [buildBasePayload, buildWorkspaceSnapshotPayload, workspaceImports.length]
+  );
+
+  const buildCurrentFilePayload = useCallback(
+    (sessionsOverride?: SessionEntry[], historyOverride?: HistoryEntry[]) => ({
+      ...buildCurrentSnapshotPayload(sessionsOverride),
       history: historyOverride ?? projectHistory
     }),
-    [buildBasePayload, projectHistory]
+    [buildCurrentSnapshotPayload, projectHistory]
   );
+
+  const buildWorkspaceSessionImport = useCallback(
+    (
+      filePath: string,
+      data: Record<string, unknown>,
+      color: string,
+      sessionIndex: number
+    ): WorkspaceSessionImport => {
+      const record = data ?? {};
+      const loadedVersion = typeof record.version === 'string' ? record.version : '';
+      const projectRecord =
+        record.project && typeof record.project === 'object'
+          ? (record.project as Record<string, unknown>)
+          : {};
+      const projectName =
+        typeof projectRecord.name === 'string' && projectRecord.name.trim().length > 0
+          ? projectRecord.name.trim()
+          : filePath.split(/[\\/]/).pop()?.replace(/\.(lmd|mlmd)$/i, '') ||
+            `Session ${sessionIndex + 1}`;
+      const normalizeStage = (value: unknown): number | null => {
+        const numeric = typeof value === 'number' ? value : Number(value);
+        return [1, 2, 3, 4].includes(numeric) ? numeric : null;
+      };
+      const normalizeStartNumber = (value: unknown): number => {
+        const numeric =
+          typeof value === 'number'
+            ? value
+            : Number.parseInt(String(value ?? '').replace(/\D/g, ''), 10);
+        if (!Number.isFinite(numeric) || numeric < 1) {
+          return DEFAULT_MICROSAMPLE_START;
+        }
+        return Math.floor(numeric);
+      };
+      const loadedProjectType =
+        projectRecord.type === 'Split-plate two cryosections' ||
+        projectRecord.type === 'One plate two cryosections' ||
+        projectRecord.type === 'One plate one cryosection' ||
+        projectRecord.type === 'Flexible multi-cryosection'
+          ? (projectRecord.type as ProjectType)
+          : 'Split-plate two cryosections';
+      const nextCryosectionCount =
+        projectRecord.cryosectionCount !== undefined
+          ? normalizeCryosectionCount(projectRecord.cryosectionCount)
+          : loadedProjectType === 'One plate one cryosection'
+            ? 1
+            : 2;
+      const nextPlateCount =
+        projectRecord.plateCount !== undefined
+          ? normalizePlateCount(projectRecord.plateCount)
+          : loadedProjectType === 'Split-plate two cryosections'
+            ? 2
+            : 1;
+
+      const nextCryosections = createCryosectionConfigs();
+      const savedCryosections = Array.isArray(projectRecord.cryosections)
+        ? projectRecord.cryosections
+        : [];
+      if (savedCryosections.length > 0) {
+        for (let index = 0; index < Math.min(savedCryosections.length, MAX_CRYOSECTIONS); index += 1) {
+          const entry =
+            savedCryosections[index] && typeof savedCryosections[index] === 'object'
+              ? (savedCryosections[index] as Record<string, unknown>)
+              : {};
+          nextCryosections[index] = {
+            name: typeof entry.name === 'string' ? entry.name : '',
+            color: normalizeCryosectionColor(entry.color, index),
+            stagePosition: normalizeStage(entry.stagePosition) ?? DEFAULT_STAGE_POSITION
+          };
+        }
+      } else {
+        const nextStagePositions: [number | null, number | null] = Array.isArray(
+          projectRecord.stagePositions
+        )
+          ? [
+              normalizeStage(projectRecord.stagePositions[0]) ?? DEFAULT_STAGE_POSITION,
+              normalizeStage(projectRecord.stagePositions[1]) ?? DEFAULT_STAGE_POSITION
+            ]
+          : [
+              normalizeStage(projectRecord.stagePosition) ?? DEFAULT_STAGE_POSITION,
+              DEFAULT_STAGE_POSITION
+            ];
+        nextCryosections[0] = {
+          name: typeof projectRecord.cryosection1 === 'string' ? projectRecord.cryosection1 : '',
+          color: getDefaultCryosectionColor(0),
+          stagePosition: nextStagePositions[0]
+        };
+        nextCryosections[1] = {
+          name: typeof projectRecord.cryosection2 === 'string' ? projectRecord.cryosection2 : '',
+          color: getDefaultCryosectionColor(1),
+          stagePosition: nextStagePositions[1]
+        };
+      }
+
+      const cryoRecords = Array.isArray(record.cryosectionData)
+        ? record.cryosectionData
+        : Array.isArray(record.cryosections)
+          ? record.cryosections
+          : [];
+      const csvPlatesByRecord = createCryoStateArray(() => [createCsvCells(), createCsvCells()]);
+      if (cryoRecords.length) {
+        for (let index = 0; index < Math.min(cryoRecords.length, MAX_CRYOSECTIONS); index += 1) {
+          const entry =
+            cryoRecords[index] && typeof cryoRecords[index] === 'object'
+              ? (cryoRecords[index] as Record<string, unknown>)
+              : {};
+          const raw = Array.isArray(entry.csvPlates) ? entry.csvPlates : [];
+          csvPlatesByRecord[index] = [normalizeCsvData(raw[0]), normalizeCsvData(raw[1])];
+        }
+      } else {
+        const csvRaw = Array.isArray(record.csvPlates) ? record.csvPlates : [];
+        csvPlatesByRecord[0] = [normalizeCsvData(csvRaw[0]), normalizeCsvData(csvRaw[1])];
+      }
+
+      const legacyPositiveStarts: [number, number] = Array.isArray(
+        projectRecord.cryosectionStartNumbers
+      )
+        ? [
+            normalizeStartNumber(projectRecord.cryosectionStartNumbers[0]),
+            normalizeStartNumber(projectRecord.cryosectionStartNumbers[1])
+          ]
+        : [
+            normalizeStartNumber(projectRecord.cryosectionStart1),
+            normalizeStartNumber(projectRecord.cryosectionStart2)
+          ];
+      const legacyNegativeStarts: [number, number] = Array.isArray(
+        projectRecord.cryosectionNegativeStartNumbers
+      )
+        ? [
+            normalizeStartNumber(projectRecord.cryosectionNegativeStartNumbers[0]),
+            normalizeStartNumber(projectRecord.cryosectionNegativeStartNumbers[1])
+          ]
+        : [
+            projectRecord.cryosectionNegativeStart1 !== undefined
+              ? normalizeStartNumber(projectRecord.cryosectionNegativeStart1)
+              : legacyPositiveStarts[0],
+            projectRecord.cryosectionNegativeStart2 !== undefined
+              ? normalizeStartNumber(projectRecord.cryosectionNegativeStart2)
+              : legacyPositiveStarts[1]
+          ];
+      const nextPlateAssignments = (() => {
+        const normalizeSegment = (raw: unknown): PlateSegmentAssignment => {
+          const entry = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+          const parsedCryoIndex =
+            entry.cryoIndex === null || entry.cryoIndex === undefined
+              ? null
+              : Number.parseInt(String(entry.cryoIndex), 10);
+          return {
+            cryoIndex:
+              Number.isFinite(parsedCryoIndex) &&
+              parsedCryoIndex >= 0 &&
+              parsedCryoIndex < MAX_CRYOSECTIONS
+                ? parsedCryoIndex
+                : null,
+            positiveStart: normalizeStartNumber(entry.positiveStart),
+            positiveManual:
+              typeof entry.positiveManual === 'boolean' ? entry.positiveManual : true,
+            negativeStart: normalizeStartNumber(entry.negativeStart),
+            negativeManual:
+              typeof entry.negativeManual === 'boolean' ? entry.negativeManual : true
+          };
+        };
+        if (Array.isArray(projectRecord.plateAssignments)) {
+          return Array.from({ length: MAX_PLATES }, (_, plateIndex) => {
+            const rawPlate =
+              projectRecord.plateAssignments[plateIndex] &&
+              typeof projectRecord.plateAssignments[plateIndex] === 'object'
+                ? (projectRecord.plateAssignments[plateIndex] as Record<string, unknown>)
+                : {};
+            const segmentsRaw = Array.isArray(rawPlate.segments) ? rawPlate.segments : [];
+            return {
+              split: rawPlate.split === true,
+              segments: [
+                normalizeSegment(segmentsRaw[0]),
+                normalizeSegment(segmentsRaw[1])
+              ] as [PlateSegmentAssignment, PlateSegmentAssignment]
+            };
+          });
+        }
+        if (loadedProjectType === 'One plate one cryosection') {
+          return [
+            {
+              split: false,
+              segments: [
+                {
+                  cryoIndex: 0,
+                  positiveStart: legacyPositiveStarts[0],
+                  positiveManual: true,
+                  negativeStart: legacyNegativeStarts[0],
+                  negativeManual: true
+                },
+                createPlateSegmentAssignment(null)
+              ]
+            },
+            {
+              split: false,
+              segments: [createPlateSegmentAssignment(null), createPlateSegmentAssignment(null)]
+            }
+          ];
+        }
+        return [
+          {
+            split: true,
+            segments: [
+              {
+                cryoIndex: 0,
+                positiveStart: legacyPositiveStarts[0],
+                positiveManual: true,
+                negativeStart: legacyNegativeStarts[0],
+                negativeManual: true
+              },
+              {
+                cryoIndex: 1,
+                positiveStart: legacyPositiveStarts[1],
+                positiveManual: true,
+                negativeStart: legacyNegativeStarts[1],
+                negativeManual: true
+              }
+            ]
+          },
+          {
+            split: loadedProjectType === 'Split-plate two cryosections',
+            segments: [
+              {
+                cryoIndex: loadedProjectType === 'Split-plate two cryosections' ? 0 : null,
+                positiveStart: legacyPositiveStarts[0],
+                positiveManual: true,
+                negativeStart: legacyNegativeStarts[0],
+                negativeManual: true
+              },
+              {
+                cryoIndex: loadedProjectType === 'Split-plate two cryosections' ? 1 : null,
+                positiveStart: legacyPositiveStarts[1],
+                positiveManual: true,
+                negativeStart: legacyNegativeStarts[1],
+                negativeManual: true
+              }
+            ]
+          }
+        ];
+      })();
+
+      const platesRaw = Array.isArray(record.designPlates) ? record.designPlates : [];
+      const normalizedPlates = [
+        normalizePlateData(platesRaw[0], formatPlateDisplayLabel(0, '')),
+        normalizePlateData(platesRaw[1], formatPlateDisplayLabel(1, ''))
+      ];
+      const nextPlateBatchIds: [string, string] = Array.isArray(projectRecord.plateBatchIds)
+        ? [
+            typeof projectRecord.plateBatchIds[0] === 'string'
+              ? projectRecord.plateBatchIds[0]
+              : '',
+            typeof projectRecord.plateBatchIds[1] === 'string'
+              ? projectRecord.plateBatchIds[1]
+              : ''
+          ]
+        : [
+            extractPlateBatchId(normalizedPlates[0]?.label, 0),
+            extractPlateBatchId(normalizedPlates[1]?.label, 1)
+          ];
+      const designPlates = normalizedPlates.map((plate, plateIndex) => ({
+        ...plate,
+        label: formatPlateDisplayLabel(plateIndex, nextPlateBatchIds[plateIndex] ?? '')
+      }));
+
+      const codeMap = buildMicrosampleCodeMapForLayout(
+        nextCryosectionCount,
+        nextPlateCount,
+        nextCryosections,
+        designPlates,
+        nextPlateAssignments
+      );
+      const rawCodeOverrides =
+        record.metadataCodeOverrides && typeof record.metadataCodeOverrides === 'object'
+          ? (record.metadataCodeOverrides as Record<string, unknown>)
+          : {};
+      const importedCodeMap = new Map(codeMap);
+      for (const [key, value] of Object.entries(rawCodeOverrides)) {
+        if (typeof value !== 'string' || value.trim().length === 0) {
+          continue;
+        }
+        if (!importedCodeMap.has(key)) {
+          continue;
+        }
+        importedCodeMap.set(key, value.trim());
+      }
+
+      const collectionRaw = Array.isArray(record.collectionPlates) ? record.collectionPlates : [];
+      const collectionPlates: [CollectionCell[][], CollectionCell[][]] = [
+        normalizeCollectionData(collectionRaw[0]),
+        normalizeCollectionData(collectionRaw[1])
+      ];
+      const collectionNotesRaw = Array.isArray(record.collectionPlateNotes)
+        ? record.collectionPlateNotes
+        : [];
+      const collectionPlateNotes: [string, string] = [
+        typeof collectionNotesRaw[0] === 'string'
+          ? collectionNotesRaw[0]
+          : designPlates[0]?.notes ?? '',
+        typeof collectionNotesRaw[1] === 'string'
+          ? collectionNotesRaw[1]
+          : designPlates[1]?.notes ?? ''
+      ];
+      const collectionColumnAreas = normalizeCollectionColumnAreas(record.collectionColumnAreas);
+      const collectionMetadataRaw =
+        record.collectionMetadata && typeof record.collectionMetadata === 'object'
+          ? (record.collectionMetadata as Record<string, unknown>)
+          : {};
+      const savedCollectionEncodingMode =
+        collectionMetadataRaw.encodingMode === 'legacy' ||
+        collectionMetadataRaw.encodingMode === 'corrected'
+          ? (collectionMetadataRaw.encodingMode as CollectionEncodingMode)
+          : null;
+      const collectionEncodingMode: CollectionEncodingMode =
+        savedCollectionEncodingMode ??
+        (!loadedVersion || isVersionAtMost(loadedVersion, '1.0.3') ? 'legacy' : 'corrected');
+      const collectionMetadata: CollectionMetadata = {
+        collectionMethod:
+          typeof collectionMetadataRaw.collectionMethod === 'string' &&
+          COLLECTION_METHOD_OPTIONS.includes(collectionMetadataRaw.collectionMethod)
+            ? collectionMetadataRaw.collectionMethod
+            : COLLECTION_METHOD_OPTIONS[0],
+        encodingMode: collectionEncodingMode,
+        date: typeof collectionMetadataRaw.date === 'string' ? collectionMetadataRaw.date : '',
+        temperature:
+          typeof collectionMetadataRaw.temperature === 'string'
+            ? collectionMetadataRaw.temperature
+            : '',
+        humidity:
+          typeof collectionMetadataRaw.humidity === 'string'
+            ? collectionMetadataRaw.humidity
+            : '',
+        notes: typeof collectionMetadataRaw.notes === 'string' ? collectionMetadataRaw.notes : '',
+        startTime:
+          typeof collectionMetadataRaw.startTime === 'string'
+            ? collectionMetadataRaw.startTime
+            : '',
+        endTime:
+          typeof collectionMetadataRaw.endTime === 'string'
+            ? collectionMetadataRaw.endTime
+            : '',
+        startTimeManual: collectionMetadataRaw.startTimeManual === true,
+        endTimeManual: collectionMetadataRaw.endTimeManual === true
+      };
+      const rawNotes =
+        record.metadataNotes && typeof record.metadataNotes === 'object'
+          ? (record.metadataNotes as Record<string, unknown>)
+          : {};
+
+      const rawCoordinateCache =
+        record.coordinateCache && typeof record.coordinateCache === 'object'
+          ? (record.coordinateCache as Record<string, unknown>)
+          : {};
+      const coordinateCache: Record<string, { x: number; y: number }> = {};
+      for (const [key, value] of Object.entries(rawCoordinateCache)) {
+        if (!value || typeof value !== 'object') {
+          continue;
+        }
+        const entry = value as Record<string, unknown>;
+        const x = typeof entry.x === 'number' ? entry.x : Number(entry.x);
+        const y = typeof entry.y === 'number' ? entry.y : Number(entry.y);
+        if (Number.isFinite(x) && Number.isFinite(y)) {
+          coordinateCache[key] = { x, y };
+        }
+      }
+
+      const id = `workspace:${sessionIndex}:${filePath}`;
+      const cutPointsByCryoKey: Record<string, WorkspaceCutPoint[]> = {};
+      const metadataRows: MetadataRow[] = [];
+      const warnings: string[] = [];
+      const sessionMergedCsvPlates: MergedCsvCell[][][] = Array.from(
+        { length: nextPlateCount },
+        () => createCsvCells()
+      );
+      for (let plateIndex = 0; plateIndex < nextPlateCount; plateIndex += 1) {
+        for (let rowIndex = 0; rowIndex < PLATE_ROWS.length; rowIndex += 1) {
+          for (let colIndex = 0; colIndex < PLATE_COLS.length; colIndex += 1) {
+            const plateAssignment = nextPlateAssignments[plateIndex];
+            const segmentIndex = plateAssignment?.split === true && colIndex >= 6 ? 1 : 0;
+            const cryoIndex = plateAssignment?.segments[segmentIndex]?.cryoIndex ?? null;
+            if (cryoIndex === null || cryoIndex === undefined) {
+              sessionMergedCsvPlates[plateIndex][rowIndex][colIndex] = {};
+              continue;
+            }
+            const primaryCell =
+              csvPlatesByRecord[cryoIndex]?.[plateIndex]?.[rowIndex]?.[colIndex];
+            sessionMergedCsvPlates[plateIndex][rowIndex][colIndex] =
+              primaryCell && primaryCell.present
+                ? {
+                    ...primaryCell,
+                    cryoIndex
+                  }
+                : {};
+          }
+        }
+      }
+      let pointCount = 0;
+      for (let cryoIndex = 0; cryoIndex < nextCryosectionCount; cryoIndex += 1) {
+        const cryoName = nextCryosections[cryoIndex]?.name?.trim() ?? '';
+        const cryoKey = normalizeCryosectionMatchKey(cryoName);
+        if (!cryoKey) {
+          continue;
+        }
+        const points: WorkspaceCutPoint[] = [];
+        for (let plateIndex = 0; plateIndex < nextPlateCount; plateIndex += 1) {
+          for (let rowIndex = 0; rowIndex < PLATE_ROWS.length; rowIndex += 1) {
+            for (let colIndex = 0; colIndex < PLATE_COLS.length; colIndex += 1) {
+              const cell = csvPlatesByRecord[cryoIndex]?.[plateIndex]?.[rowIndex]?.[colIndex];
+              if (!cell?.present) {
+                continue;
+              }
+              const sample = designPlates[plateIndex]?.cells[rowIndex]?.[colIndex] ?? DEFAULT_SAMPLE;
+              if (sample === DISABLED_SAMPLE || isSingleLinkedImageCsvCell(cell)) {
+                continue;
+              }
+              const cacheKey = `${plateIndex}-${rowIndex}-${colIndex}`;
+              const cached = coordinateCache[cacheKey];
+              if (!cached || !Number.isFinite(cached.x) || !Number.isFinite(cached.y)) {
+                continue;
+              }
+              points.push({
+                id: `workspace:${id}:${plateIndex}-${rowIndex}-${colIndex}`,
+                x: cached.x,
+                y: cached.y,
+                sample,
+                code: importedCodeMap.get(cacheKey),
+                preImage: cell.preImage?.trim() || undefined,
+                cutImage: cell.cutImage?.trim() || undefined,
+                inferred: cell.inferred === true || cell.manualAssigned === true,
+                inferenceConfirmed: cell.inferenceConfirmed === true,
+                plateLabel: designPlates[plateIndex]?.label || `Plate ${plateIndex + 1}`,
+                well: `${PLATE_ROWS[rowIndex]}${PLATE_COLS[colIndex]}`,
+                imageUiIds: [],
+                plateIndex,
+                rowIndex,
+                colIndex,
+                sessionId: id,
+                sessionLabel: projectName,
+                sessionColor: color,
+                sourceCryosection: cryoName,
+                editable: false,
+                imported: true
+              });
+            }
+          }
+        }
+        if (points.length) {
+          cutPointsByCryoKey[cryoKey] = points;
+          pointCount += points.length;
+        }
+      }
+
+      for (let plateIndex = 0; plateIndex < nextPlateCount; plateIndex += 1) {
+        for (let rowIndex = 0; rowIndex < PLATE_ROWS.length; rowIndex += 1) {
+          for (let colIndex = 0; colIndex < PLATE_COLS.length; colIndex += 1) {
+            const plateAssignment = nextPlateAssignments[plateIndex];
+            const segmentIndex = plateAssignment?.split === true && colIndex >= 6 ? 1 : 0;
+            const sample = designPlates[plateIndex]?.cells[rowIndex]?.[colIndex] ?? DEFAULT_SAMPLE;
+            const cell = sessionMergedCsvPlates[plateIndex]?.[rowIndex]?.[colIndex] ?? {};
+            const cryoIndex =
+              cell.cryoIndex ??
+              plateAssignment?.segments[segmentIndex]?.cryoIndex ??
+              0;
+            const halfLabelBase =
+              segmentIndex === 0
+                ? designPlates[plateIndex]?.leftName || ''
+                : designPlates[plateIndex]?.rightName || '';
+            const collection = collectionPlates[plateIndex]?.[rowIndex]?.[colIndex] ?? {
+              left: 0,
+              right: 0,
+              rightTouched: false
+            };
+            const collectionLabel =
+              sample === DISABLED_SAMPLE || (collection.left === 0 && collection.right === 0)
+                ? ''
+                : `c${collection.left}y${getCollectionYValue(
+                    collection.right,
+                    collectionMetadata.encodingMode
+                  )}`;
+            const cellHasData = cell.present || hasCsvCellData(cell);
+            const manualAssigned =
+              cell.manualAssigned === true ||
+              (isManualCoordinateLabel(cell.images) &&
+                !cell.preImage?.trim() &&
+                !cell.cutImage?.trim());
+            const images =
+              sample === DISABLED_SAMPLE
+                ? ''
+                : cellHasData
+                  ? joinImageNames(cell.preImage, cell.cutImage) ||
+                    (manualAssigned ? MANUAL_COORDINATE_LABEL : cell.images || '')
+                  : '';
+            const cacheKey = `${plateIndex}-${rowIndex}-${colIndex}`;
+            const cached = coordinateCache[cacheKey];
+            const coordPresent = !!(
+              cached &&
+              Number.isFinite(cached.x) &&
+              Number.isFinite(cached.y)
+            );
+            const controlHasCollectionInfo =
+              (sample === 'X' || sample === 'Z' || sample === 'R') && collectionLabel.length > 0;
+            const inferred = cell.inferred === true;
+            const inferenceConfirmed = cell.inferenceConfirmed === true;
+            let coordStatus: MetadataRow['coordStatus'] = 'pending';
+            if (sample === DISABLED_SAMPLE) {
+              coordStatus = 'pending';
+            } else if (controlHasCollectionInfo) {
+              coordStatus = 'warn';
+            } else if (manualAssigned && coordPresent) {
+              coordStatus = 'warn';
+            } else if (inferred && coordPresent && !inferenceConfirmed) {
+              coordStatus = 'warn';
+            } else if (sample === 'X' || sample === 'Z' || sample === 'R') {
+              coordStatus = coordPresent ? 'bad' : 'ok';
+            } else {
+              coordStatus = coordPresent ? 'ok' : 'bad';
+            }
+            const codeKey = `${plateIndex}-${rowIndex}-${colIndex}`;
+            const autoCode = codeMap.get(codeKey) ?? '';
+            const code = importedCodeMap.get(codeKey) ?? autoCode;
+            metadataRows.push({
+              key: `meta-${plateIndex}-${PLATE_ROWS[rowIndex]}-${PLATE_COLS[colIndex]}`,
+              cellKey: codeKey,
+              well: `${PLATE_COLS[colIndex]}${PLATE_ROWS[rowIndex]}`,
+              plateLabel: designPlates[plateIndex]?.label || `Plate ${plateIndex + 1}`,
+              batch: projectName,
+              halfLabel: getCryosectionLabelForSample(halfLabelBase, sample),
+              half: segmentIndex === 0 ? 'left' : 'right',
+              cryoIndex,
+              sample,
+              plateIndex,
+              rowIndex,
+              colIndex,
+              coordStatus,
+              inferred,
+              inferenceConfirmed,
+              manualAssigned,
+              autoCode,
+              code,
+              number: code ? code.slice(-3) : '',
+              collection: collectionLabel,
+              collectionMethod: collectionMetadata.collectionMethod || COLLECTION_METHOD_OPTIONS[0],
+              shape: sample === 'P' || sample === 'M' ? 'Elipse' : '',
+              images,
+              pixelX: cell.pixelX,
+              pixelY: cell.pixelY,
+              xCoord: cached?.x,
+              yCoord: cached?.y,
+              size: sample === DISABLED_SAMPLE ? undefined : cellHasData ? cell.size : undefined,
+              notes: typeof rawNotes[codeKey] === 'string' ? (rawNotes[codeKey] as string) : '',
+              contourDistances: {}
+            });
+          }
+        }
+      }
+
+      if (pointCount === 0) {
+        warnings.push('No saved cut points were found in this session snapshot.');
+      }
+
+      return {
+        id,
+        filePath,
+        label: projectName,
+        color,
+        plateCount: nextPlateCount,
+        plateAssignments: nextPlateAssignments,
+        designPlates,
+        collectionPlates,
+        collectionPlateNotes,
+        collectionColumnAreas,
+        collectionMetadata,
+        metadataRows,
+        cryosectionNames: nextCryosections
+          .slice(0, nextCryosectionCount)
+          .map((item) => item.name.trim())
+          .filter(Boolean),
+        cutPointsByCryoKey,
+        warnings
+      };
+    },
+    []
+  );
+
+  const handleLoadMultipleProjects = async (usersOverride?: string[]) => {
+    if (!usersOverride && !ensureUser('loadMultiple')) {
+      return;
+    }
+    if (!window.lifApi?.loadProjects) {
+      setStatus('Multiple-session load not available.');
+      return;
+    }
+    const response = await window.lifApi.loadProjects();
+    if ('error' in response) {
+      setStatus(response.error);
+      return;
+    }
+    if ('canceled' in response) {
+      return;
+    }
+    if (response.entries.length < 2) {
+      setStatus('Select at least two sessions to open a multi-session workspace.');
+      return;
+    }
+
+    const parsed = response.entries.map((entry, index) =>
+      buildWorkspaceSessionImport(
+        entry.filePath,
+        entry.data,
+        WORKSPACE_SESSION_COLORS[index % WORKSPACE_SESSION_COLORS.length],
+        index
+      )
+    );
+    const sharedCryosectionKeys = new Set<string>();
+    const sharedCryosectionLabels = new Map<string, string>();
+    const allSessionKeySets = parsed.map((session) => {
+      const keys = new Set<string>();
+      for (const name of session.cryosectionNames) {
+        const key = normalizeCryosectionMatchKey(name);
+        if (!key) {
+          continue;
+        }
+        keys.add(key);
+        if (!sharedCryosectionLabels.has(key)) {
+          sharedCryosectionLabels.set(key, name);
+        }
+      }
+      return keys;
+    });
+    const sharedKeyCounts = new Map<string, number>();
+    for (const keySet of allSessionKeySets) {
+      for (const key of keySet) {
+        sharedKeyCounts.set(key, (sharedKeyCounts.get(key) ?? 0) + 1);
+      }
+    }
+    for (const [key, count] of sharedKeyCounts.entries()) {
+      if (count > 1) {
+        sharedCryosectionKeys.add(key);
+      }
+    }
+    const warnings: string[] = [];
+    parsed.forEach((item, sessionIndex) => {
+      warnings.push(...item.warnings);
+      const otherSessionKeys = allSessionKeySets.filter((_, index) => index !== sessionIndex);
+      const overlapWithAny = item.cryosectionNames
+        .map((name) => normalizeCryosectionMatchKey(name))
+        .filter(
+          (key) =>
+            key &&
+            otherSessionKeys.some((keySet) => keySet.has(key))
+        );
+      if (overlapWithAny.length === 0) {
+        warnings.push(`${item.label} shares no cryosection names with the other selected sessions.`);
+      }
+    });
+    setWorkspaceLoadPrompt({
+      sessions: parsed,
+      warnings: Array.from(new Set(warnings)),
+      sharedCryosections: Array.from(sharedCryosectionKeys).map(
+        (key) => sharedCryosectionLabels.get(key) ?? key
+      )
+    });
+  };
+
+  const handleConfirmWorkspaceLoad = async () => {
+    if (!workspaceLoadPrompt) {
+      return;
+    }
+    const orderedSessions = workspaceLoadPrompt.sessions;
+    const [primary, ...imports] = orderedSessions;
+    if (!primary) {
+      return;
+    }
+    const users = normalizeUserList(selectedSessionUsers);
+    await handleLoadProject(users, primary.filePath);
+    setWorkspacePrimaryColor(primary.color);
+    setWorkspacePrimaryFilePath(primary.filePath);
+    const nextVisibility: Record<string, boolean> = {
+      [PRIMARY_WORKSPACE_SESSION_ID]: true
+    };
+    for (const item of imports) {
+      nextVisibility[item.id] = true;
+    }
+    setWorkspaceImports(imports);
+    setWorkspaceSessionVisibility(nextVisibility);
+    setWorkspaceLoadPrompt(null);
+    setStatus(`Loaded multi-session workspace: ${orderedSessions.length} session(s).`);
+  };
 
   const handleSaveProject = async (mode: 'save' | 'saveAs' = 'save') => {
     if (!window.lifApi?.saveProject) {
       setStatus('Save not available.');
       return;
     }
-    const basePayload = buildBasePayload();
+    const basePayload = buildCurrentSnapshotPayload();
     const savedAt = new Date().toISOString();
     const activeSessionUsers =
       sessions.find((session) => session.id === currentSessionId)?.users ?? selectedSessionUsers;
@@ -6926,13 +9134,18 @@ export default function App(): JSX.Element {
     );
     const nextHistory = appendHistoryEntry(projectHistory, historyEntry);
     const payload = {
-      ...buildSavePayload(undefined, nextHistory),
+      ...buildCurrentFilePayload(undefined, nextHistory),
       savedAt
     };
+    const wantsWorkspaceSave = workspaceImports.length > 0;
+    const isWorkspaceFile = /\.mlmd$/i.test(lastSavedPath ?? '');
+    const shouldPromptForWorkspacePath = wantsWorkspaceSave !== isWorkspaceFile;
     const response: LmdSaveResponse = await window.lifApi.saveProject({
       payload,
-      filePath: mode === 'save' ? lastSavedPath ?? undefined : undefined,
-      forceDialog: mode === 'saveAs'
+      filePath:
+        mode === 'save' && !shouldPromptForWorkspacePath ? lastSavedPath ?? undefined : undefined,
+      forceDialog: mode === 'saveAs' || shouldPromptForWorkspacePath,
+      fileType: wantsWorkspaceSave ? 'mlmd' : 'lmd'
     });
     if ('error' in response) {
       setStatus(response.error);
@@ -6943,7 +9156,11 @@ export default function App(): JSX.Element {
     }
     setProjectHistory(nextHistory);
     setLastSavedPath(response.filePath);
-    setStatus(`Saved session: ${response.filePath.split(/[\\\\/]/).pop()}`);
+    setStatus(
+      `${wantsWorkspaceSave ? 'Saved workspace' : 'Saved session'}: ${response.filePath
+        .split(/[\\\\/]/)
+        .pop()}`
+    );
     setLastSavedSnapshot(JSON.stringify(basePayload));
     setHasUnsavedChanges(false);
   };
@@ -6983,6 +9200,7 @@ export default function App(): JSX.Element {
     setMetadataSearchScope('all');
     setMetadataCryoFilters(createCryoStateArray(() => true));
     setMetadataP(true);
+    setMetadataX(true);
     setMetadataM(true);
     setMetadataZ(true);
     setMetadataR(true);
@@ -6995,6 +9213,14 @@ export default function App(): JSX.Element {
     setCollectionColumnWarning(null);
     setCollectionMetadata(EMPTY_COLLECTION_METADATA);
     setLegacyCollectionPrompt(null);
+    setWorkspaceImports([]);
+    setWorkspaceSessionVisibility({});
+    setWorkspaceLoadPrompt(null);
+    setWorkspaceDesignCollapsed({});
+    setWorkspaceCollectionCollapsed({});
+    setWorkspaceMetadataCollapsed({});
+    setWorkspacePrimaryColor(WORKSPACE_SESSION_COLORS[0]);
+    setWorkspacePrimaryFilePath(null);
     setDetachCryoPromptOpen(false);
     setCollapsedPlates([true, true]);
     setCollectionPlates([createCollectionCells(), createCollectionCells()]);
@@ -7016,8 +9242,12 @@ export default function App(): JSX.Element {
     setMetadataColumnsPopupOpen(false);
     setMetadataFiltersPopupOpen(false);
     setMetadataExportPopupOpen(false);
+    setCropCsvOutsidePrompt(null);
     setMetadataExportColumns({});
     setMetadataExportOrder([]);
+    setMetadataCodeOverrides({});
+    setEditingMetadataCodeKey(null);
+    setMetadataCodeDraft('');
     setMetadataNotes({});
     setOverviewByCryo(createCryoStateArray(() => createOverviewState()));
     setOverviewSelectionByCryo(createCryoStateArray(() => createOverviewSelection()));
@@ -7047,6 +9277,14 @@ export default function App(): JSX.Element {
       return;
     }
     pendingLoadPathRef.current = null;
+    setWorkspaceImports([]);
+    setWorkspaceSessionVisibility({});
+    setWorkspaceLoadPrompt(null);
+    setWorkspaceDesignCollapsed({});
+    setWorkspaceCollectionCollapsed({});
+    setWorkspaceMetadataCollapsed({});
+    setWorkspacePrimaryColor(WORKSPACE_SESSION_COLORS[0]);
+    setWorkspacePrimaryFilePath(null);
     const sessionUsers = normalizeUserList(usersOverride ?? selectedSessionUsers);
     setDetachCryoPromptOpen(false);
     if (!window.lifApi?.loadProject || !window.lifApi?.loadProjectFromPath) {
@@ -7066,6 +9304,43 @@ export default function App(): JSX.Element {
 
     const data = response.data ?? {};
     const record = data as Record<string, unknown>;
+    const workspaceRecord =
+      record.workspace && typeof record.workspace === 'object'
+        ? (record.workspace as Record<string, unknown>)
+        : null;
+    const loadedWorkspaceImports = Array.isArray(workspaceRecord?.imports)
+      ? workspaceRecord.imports
+          .map((item, index) => normalizeWorkspaceSessionImport(item, index))
+          .filter((item): item is WorkspaceSessionImport => item !== null)
+      : [];
+    const workspacePrimaryRecord =
+      workspaceRecord?.primarySession && typeof workspaceRecord.primarySession === 'object'
+        ? (workspaceRecord.primarySession as Record<string, unknown>)
+        : {};
+    const loadedWorkspacePrimaryColor =
+      typeof workspacePrimaryRecord.color === 'string' && workspacePrimaryRecord.color.trim().length > 0
+        ? workspacePrimaryRecord.color.trim()
+        : WORKSPACE_SESSION_COLORS[0];
+    const loadedWorkspacePrimaryFilePath =
+      typeof workspacePrimaryRecord.filePath === 'string' &&
+      workspacePrimaryRecord.filePath.trim().length > 0
+        ? workspacePrimaryRecord.filePath.trim()
+        : response.filePath.toLowerCase().endsWith('.mlmd')
+          ? null
+          : response.filePath;
+    const loadedWorkspaceVisibility = (() => {
+      const raw =
+        workspaceRecord?.sessionVisibility && typeof workspaceRecord.sessionVisibility === 'object'
+          ? (workspaceRecord.sessionVisibility as Record<string, unknown>)
+          : {};
+      const nextVisibility: Record<string, boolean> = {
+        [PRIMARY_WORKSPACE_SESSION_ID]: true
+      };
+      for (const entry of loadedWorkspaceImports) {
+        nextVisibility[entry.id] = raw[entry.id] !== false;
+      }
+      return nextVisibility;
+    })();
     const loadedVersion = typeof record.version === 'string' ? record.version : '';
     const projectRecord =
       record.project && typeof record.project === 'object'
@@ -7516,6 +9791,7 @@ export default function App(): JSX.Element {
       )
     );
     setMetadataP(filters.sampleP !== false);
+    setMetadataX(filters.sampleX !== false);
     setMetadataM(filters.sampleM !== false);
     setMetadataZ(filters.sampleZ !== false);
     setMetadataR(filters.sampleR !== false);
@@ -7540,6 +9816,7 @@ export default function App(): JSX.Element {
     setMetadataColumnsPopupOpen(false);
     setMetadataFiltersPopupOpen(false);
     setMetadataExportPopupOpen(false);
+    setCropCsvOutsidePrompt(null);
     setMetadataExportColumns({});
     setMetadataExportOrder([]);
 
@@ -7642,6 +9919,19 @@ export default function App(): JSX.Element {
         nextNotes[key] = value;
       }
     }
+    const rawCodeOverrides =
+      record.metadataCodeOverrides && typeof record.metadataCodeOverrides === 'object'
+        ? (record.metadataCodeOverrides as Record<string, unknown>)
+        : {};
+    const nextCodeOverrides: Record<string, string> = {};
+    for (const [key, value] of Object.entries(rawCodeOverrides)) {
+      if (typeof value === 'string' && value.trim()) {
+        nextCodeOverrides[key] = value.trim();
+      }
+    }
+    setMetadataCodeOverrides(nextCodeOverrides);
+    setEditingMetadataCodeKey(null);
+    setMetadataCodeDraft('');
     setMetadataNotes(nextNotes);
 
     const overviewRaw = Array.isArray(record.overview) ? record.overview : [];
@@ -7711,6 +10001,10 @@ export default function App(): JSX.Element {
     setCoordinateOverridesByCryo(nextCoordinateOverrides);
     setCoordinatesReady(Object.keys(nextCoordinateCache).length > 0);
 
+    setWorkspaceImports(loadedWorkspaceImports);
+    setWorkspaceSessionVisibility(loadedWorkspaceVisibility);
+    setWorkspacePrimaryColor(loadedWorkspacePrimaryColor);
+    setWorkspacePrimaryFilePath(loadedWorkspacePrimaryFilePath);
     setLastSavedPath(response.filePath);
     setLastSavedSnapshot('');
     setHasUnsavedChanges(true);
@@ -7750,13 +10044,22 @@ export default function App(): JSX.Element {
           await loadLifFiles(lifFilesByRecord[cryoIndex], cryoIndex);
         }
       }
-      setStatus(`Loaded session: ${response.filePath.split(/[\\\\/]/).pop()}`);
+      setStatus(
+        loadedWorkspaceImports.length > 0
+          ? `Loaded multi-session workspace: ${response.filePath.split(/[\\\\/]/).pop()}`
+          : `Loaded session: ${response.filePath.split(/[\\\\/]/).pop()}`
+      );
     } else {
-      setStatus('Session loaded (no LIF files referenced).');
+      setStatus(
+        loadedWorkspaceImports.length > 0
+          ? 'Multi-session workspace loaded (no LIF files referenced).'
+          : 'Session loaded (no LIF files referenced).'
+      );
     }
   };
   saveProjectHandlerRef.current = handleSaveProject;
   loadProjectHandlerRef.current = handleLoadProject;
+  loadMultipleProjectsHandlerRef.current = handleLoadMultipleProjects;
   newProjectHandlerRef.current = handleNewProject;
 
   const handleToggleSessionUser = (user: string, checked: boolean) => {
@@ -7778,6 +10081,11 @@ export default function App(): JSX.Element {
     setNewUserInput('');
   };
 
+  const handleRemoveUser = (user: string) => {
+    setAvailableUsers((prev) => prev.filter((item) => item !== user));
+    setSelectedSessionUsers((prev) => prev.filter((item) => item !== user));
+  };
+
   const handleConfirmUser = () => {
     const users = normalizeUserList(selectedSessionUsers);
     if (!users.length) {
@@ -7792,6 +10100,10 @@ export default function App(): JSX.Element {
     }
     if (action === 'load') {
       void handleLoadProject(users, pendingLoadPathRef.current ?? undefined);
+      return;
+    }
+    if (action === 'loadMultiple') {
+      void handleLoadMultipleProjects(users);
       return;
     }
     pendingLoadPathRef.current = null;
@@ -7818,8 +10130,8 @@ export default function App(): JSX.Element {
   };
 
   const projectSnapshot = useMemo(() => {
-    return JSON.stringify(buildBasePayload());
-  }, [buildBasePayload]);
+    return JSON.stringify(buildCurrentSnapshotPayload());
+  }, [buildCurrentSnapshotPayload]);
 
   useEffect(() => {
     if (syncSnapshotOnNext) {
@@ -7836,7 +10148,7 @@ export default function App(): JSX.Element {
   }, [projectSnapshot, lastSavedSnapshot, syncSnapshotOnNext]);
 
   const applySampleType = (type: SampleType) => {
-    if (designLocked) {
+    if (designInteractionLocked) {
       return;
     }
     if (selectedPlateCells.size === 0) {
@@ -7894,7 +10206,7 @@ export default function App(): JSX.Element {
   };
 
   const randomAssignment = () => {
-    if (designLocked) {
+    if (designInteractionLocked) {
       return;
     }
     const mCount = Math.max(0, Math.floor(randomAssignmentSettings.M));
@@ -8291,6 +10603,15 @@ export default function App(): JSX.Element {
         ctx.arc(px, py, isSelected ? radius * 1.4 : radius, 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
+        if (workspaceImports.length > 0) {
+          ctx.strokeStyle = point.sessionColor;
+          ctx.lineWidth = isSelected ? 2.6 : 1.8;
+          ctx.beginPath();
+          ctx.arc(px, py, (isSelected ? radius * 1.4 : radius) + 2, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.strokeStyle = 'rgba(15, 23, 42, 0.85)';
+          ctx.lineWidth = 1;
+        }
         if (isSelected) {
           ctx.strokeStyle = '#ec4899';
           ctx.lineWidth = 2.2;
@@ -8580,7 +10901,8 @@ export default function App(): JSX.Element {
     showCutLabels,
     orphanImageInfoById,
     thumbProgress,
-    visibleCoordinateCutPoints
+    visibleCoordinateCutPoints,
+    workspaceImports.length
   ]);
 
   const updateOverview = useCallback(() => {
@@ -8643,7 +10965,8 @@ export default function App(): JSX.Element {
         if (!contour.visible && contour.id !== activeOverviewContourId) {
           continue;
         }
-        for (const point of contour.points) {
+        const stagePoints = getOverviewContourStagePoints(contour, overview, stagePosition);
+        for (const point of stagePoints) {
           minX = Math.min(minX, point.x);
           maxX = Math.max(maxX, point.x);
           minY = Math.min(minY, point.y);
@@ -8894,14 +11217,15 @@ export default function App(): JSX.Element {
     if (overviewContours.length > 0) {
       ctx.save();
       for (const contour of overviewContours) {
-        if (!contour.visible || contour.points.length === 0) {
+        const stagePoints = getOverviewContourStagePoints(contour, overview, stagePosition);
+        if (!contour.visible || stagePoints.length === 0) {
           continue;
         }
         ctx.strokeStyle = contour.color;
         ctx.fillStyle = contour.color;
         ctx.lineWidth = 2;
         ctx.beginPath();
-        contour.points.forEach((point, index) => {
+        stagePoints.forEach((point, index) => {
           const canvasPoint = stageToCanvas(point.x, point.y);
           if (index === 0) {
             ctx.moveTo(canvasPoint.x, canvasPoint.y);
@@ -8909,14 +11233,14 @@ export default function App(): JSX.Element {
             ctx.lineTo(canvasPoint.x, canvasPoint.y);
           }
         });
-        if (contour.closed && contour.points.length > 2) {
-          const first = stageToCanvas(contour.points[0].x, contour.points[0].y);
+        if (contour.closed && stagePoints.length > 2) {
+          const first = stageToCanvas(stagePoints[0].x, stagePoints[0].y);
           ctx.lineTo(first.x, first.y);
         }
-        if (contour.points.length > 1) {
+        if (stagePoints.length > 1) {
           ctx.stroke();
         }
-        for (const [pointIndex, point] of contour.points.entries()) {
+        for (const [pointIndex, point] of stagePoints.entries()) {
           const canvasPoint = stageToCanvas(point.x, point.y);
           overviewContourAnchorsRef.current.push({
             contourId: contour.id,
@@ -8962,8 +11286,8 @@ export default function App(): JSX.Element {
           ctx.stroke();
           ctx.restore();
         }
-        if (contour.points.length > 0) {
-          const anchor = stageToCanvas(contour.points[0].x, contour.points[0].y);
+        if (stagePoints.length > 0) {
+          const anchor = stageToCanvas(stagePoints[0].x, stagePoints[0].y);
           ctx.font = `${Math.max(10, canvas.width * 0.009)}px "Source Sans 3", sans-serif`;
           ctx.fillStyle = '#e5e7eb';
           ctx.textAlign = 'left';
@@ -8974,8 +11298,10 @@ export default function App(): JSX.Element {
       const drawingContour = activeOverviewContourId
         ? overviewContours.find((contour) => contour.id === activeOverviewContourId)
         : undefined;
-      if (drawingContour && overviewContourPreview && drawingContour.points.length > 0) {
-        const last = drawingContour.points[drawingContour.points.length - 1];
+      const drawingContourStagePoints =
+        drawingContour ? getOverviewContourStagePoints(drawingContour, overview, stagePosition) : [];
+      if (drawingContour && overviewContourPreview && drawingContourStagePoints.length > 0) {
+        const last = drawingContourStagePoints[drawingContourStagePoints.length - 1];
         const from = stageToCanvas(last.x, last.y);
         const to = stageToCanvas(overviewContourPreview.x, overviewContourPreview.y);
         ctx.setLineDash([6, 6]);
@@ -9021,6 +11347,15 @@ export default function App(): JSX.Element {
         ctx.arc(px, py, radius, 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
+        if (workspaceImports.length > 0) {
+          ctx.strokeStyle = point.sessionColor;
+          ctx.lineWidth = 1.6;
+          ctx.beginPath();
+          ctx.arc(px, py, radius + 2, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.strokeStyle = 'rgba(15, 23, 42, 0.85)';
+          ctx.lineWidth = 1;
+        }
         overviewPointsRef.current.push({
           id: point.id,
           x: px,
@@ -9163,7 +11498,8 @@ export default function App(): JSX.Element {
     overviewContourPreview,
     stagePosition,
     cutPointById,
-    hasCoordinateInputs
+    hasCoordinateInputs,
+    workspaceImports.length
   ]);
 
   useCanvasResize(mapCanvasRef, mapContainerRef, updateMap, activeTab);
@@ -9240,7 +11576,9 @@ export default function App(): JSX.Element {
     if (
       !window.lifApi?.onSaveRequest ||
       !window.lifApi?.onLoadRequest ||
-      !window.lifApi?.onNewProject
+      !window.lifApi?.onLoadMultipleRequest ||
+      !window.lifApi?.onNewProject ||
+      !window.lifApi?.onKeywordLibraryRequest
     ) {
       return;
     }
@@ -9250,13 +11588,24 @@ export default function App(): JSX.Element {
     const cleanupLoad = window.lifApi.onLoadRequest((filePath) => {
       void loadProjectHandlerRef.current(undefined, filePath);
     });
+    const cleanupLoadMultiple = window.lifApi.onLoadMultipleRequest(() => {
+      void loadMultipleProjectsHandlerRef.current();
+    });
     const cleanupNew = window.lifApi.onNewProject(() => {
       newProjectHandlerRef.current();
+    });
+    const cleanupKeywordLibrary = window.lifApi.onKeywordLibraryRequest(() => {
+      setMetadataColumnsPopupOpen(false);
+      setMetadataFiltersPopupOpen(false);
+      setMetadataExportPopupOpen(false);
+      setActiveTab('keywordLibrary');
     });
     return () => {
       cleanupSave();
       cleanupLoad();
+      cleanupLoadMultiple();
       cleanupNew();
+      cleanupKeywordLibrary();
     };
   }, []);
 
@@ -10133,6 +12482,7 @@ export default function App(): JSX.Element {
     const startY = (event.clientY - rect.top) * dpr;
     const hit = findClosestMapPoint(startX, startY, dpr);
     if (hit) {
+      const hitPoint = cutPointById.get(hit.id);
       const selectedSet = new Set(selectedCutIds);
       if (event.shiftKey) {
         selectedSet.add(hit.id);
@@ -10141,11 +12491,14 @@ export default function App(): JSX.Element {
         selectedSet.add(hit.id);
       }
       setSelectedCutIdsByCryo((prev) => replaceAt(prev, activeCryosection, selectedSet));
+      if (!hitPoint?.editable) {
+        return;
+      }
 
       const originCoords: Record<string, { x: number; y: number }> = {};
       for (const id of selectedSet) {
         const point = cutPointById.get(id);
-        if (point) {
+        if (point?.editable) {
           originCoords[id] = { x: point.x, y: point.y };
         }
       }
@@ -10445,6 +12798,9 @@ export default function App(): JSX.Element {
 
     if (activeOverviewContourId) {
       const activeContour = overviewContours.find((contour) => contour.id === activeOverviewContourId);
+      const activeContourStagePoints = activeContour
+        ? getOverviewContourStagePoints(activeContour, overview, stagePosition)
+        : [];
       const hasActiveContour = Boolean(activeContour);
       if (!hasActiveContour) {
         setActiveOverviewContour(null);
@@ -10471,11 +12827,11 @@ export default function App(): JSX.Element {
         updateOverviewRef.current();
         return;
       }
-      if (activeContour && activeContour.points.length >= 2) {
+      if (activeContour && activeContourStagePoints.length >= 2) {
         const segmentHit = closestPolylineSegmentIndex(
           sx,
           sy,
-          activeContour.points.map((point) => stageToCanvas(point.x, point.y)),
+          activeContourStagePoints.map((point) => stageToCanvas(point.x, point.y)),
           activeContour.closed
         );
         if (segmentHit && segmentHit.distance <= contourHitRadius) {
@@ -10488,7 +12844,12 @@ export default function App(): JSX.Element {
                     ...contour,
                     points: [
                       ...contour.points.slice(0, insertIndex),
-                      { x: stageX, y: stageY },
+                      toOverviewContourPoint(
+                        contour,
+                        { x: stageX, y: stageY },
+                        overview,
+                        stagePosition
+                      ),
                       ...contour.points.slice(insertIndex)
                     ]
                   }
@@ -10512,7 +12873,10 @@ export default function App(): JSX.Element {
           contour.id === activeOverviewContourId
             ? {
                 ...contour,
-                points: [...contour.points, { x: stageX, y: stageY }]
+                points: [
+                  ...contour.points,
+                  toOverviewContourPoint(contour, { x: stageX, y: stageY }, overview, stagePosition)
+                ]
               }
             : contour
         )
@@ -10654,7 +13018,14 @@ export default function App(): JSX.Element {
               ? {
                   ...contour,
                   points: contour.points.map((point, index) =>
-                    index === pointIndex ? { x: stageX, y: stageY } : point
+                    index === pointIndex
+                      ? toOverviewContourPoint(
+                          contour,
+                          { x: stageX, y: stageY },
+                          overview,
+                          stagePosition
+                        )
+                      : point
                   )
                 }
               : contour
@@ -10838,12 +13209,15 @@ export default function App(): JSX.Element {
 
     if (activeOverviewContourId) {
       const activeContour = overviewContours.find((contour) => contour.id === activeOverviewContourId);
+      const activeContourStagePoints = activeContour
+        ? getOverviewContourStagePoints(activeContour, overview, stagePosition)
+        : [];
       const hoveredContourSegment =
-        activeContour && activeContour.points.length >= 2
+        activeContour && activeContourStagePoints.length >= 2
           ? closestPolylineSegmentIndex(
               x,
               y,
-              activeContour.points.map((point) => ({
+              activeContourStagePoints.map((point) => ({
                 x: (point.x * baseScale + baseOffsetX) * zoom + panX,
                 y: (point.y * baseScale + baseOffsetY) * zoom + panY
               })),
@@ -11304,6 +13678,507 @@ export default function App(): JSX.Element {
     };
   }, [loadThumbnail, orphanAssignmentPrompt]);
 
+  const workspaceDesignContent = workspaceReadOnly ? (
+    <>
+      <aside className="design-sidebar">
+        <div className="control-title">Design</div>
+        <div className="filter-hint">
+          Multi-session workspace is read-only. Sessions are shown in workspace order.
+        </div>
+      </aside>
+      <div className="design-panels workspace-session-panels">
+        {workspaceSessionPanels.map((session) => {
+          const collapsed = workspaceDesignCollapsed[session.id] ?? false;
+          return (
+            <section key={`workspace-design-${session.id}`} className="workspace-session-panel">
+              <button
+                type="button"
+                className="workspace-session-panel-header"
+                onClick={() => toggleWorkspaceSessionCollapse('design', session.id)}
+              >
+                <span
+                  className="workspace-session-swatch"
+                  style={{ backgroundColor: session.color }}
+                  aria-hidden
+                />
+                <span className="workspace-session-panel-title">{session.label}</span>
+                <span className="workspace-session-panel-subtitle">
+                  {session.filePath || 'Current workspace session'}
+                </span>
+                <span className={`workspace-session-panel-toggle ${collapsed ? '' : 'expanded'}`}>
+                  ▾
+                </span>
+              </button>
+              {collapsed ? null : (
+                <div className="workspace-session-panel-body">
+                  {Array.from({ length: session.plateCount }, (_, index) => index).map((plateIndex) => {
+                    const plate = session.designPlates[plateIndex];
+                    if (!plate) {
+                      return null;
+                    }
+                    const isSplit = session.plateAssignments[plateIndex]?.split === true;
+                    const counts = sampleCounts(plate);
+                    return (
+                      <div key={`workspace-design-plate-${session.id}-${plateIndex}`} className="plate-card">
+                        <div className="plate-header">
+                          <div className="plate-header-main">
+                            <div className="plate-title-text">{plate.label || `Plate ${plateIndex + 1}`}</div>
+                            <div className="plate-tags">
+                              {SAMPLE_OPTIONS.map((option) => (
+                                <span
+                                  key={`workspace-design-tag-${session.id}-${plateIndex}-${option.type}`}
+                                  className={`plate-tag sample-${option.type}`}
+                                >
+                                  {option.type} {counts[option.type]}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="plate-scroll">
+                          <table className="plate">
+                            <thead>
+                              <tr>
+                                <th className="corner" />
+                                {!isSplit ? (
+                                  <th colSpan={12}>
+                                    <div className="plate-header-label">
+                                      {plate.leftName || `Unassigned ${keywordLabelLower('cryosection')}`}
+                                    </div>
+                                  </th>
+                                ) : (
+                                  <>
+                                    <th colSpan={6} className="plate-divider">
+                                      <div className="plate-header-label">
+                                        {plate.leftName || `Unassigned ${keywordLabelLower('cryosection')}`}
+                                      </div>
+                                    </th>
+                                    <th colSpan={6}>
+                                      <div className="plate-header-label">
+                                        {plate.rightName || `Unassigned ${keywordLabelLower('cryosection')}`}
+                                      </div>
+                                    </th>
+                                  </>
+                                )}
+                              </tr>
+                              <tr>
+                                <th className="corner" />
+                                {PLATE_COLS.map((col) => (
+                                  <th
+                                    key={`workspace-design-col-${session.id}-${plateIndex}-${col}`}
+                                    className={isSplit && col === 6 ? 'plate-divider' : undefined}
+                                  >
+                                    {col}
+                                  </th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {PLATE_ROWS.map((row, rowIndex) => (
+                                <tr key={`workspace-design-row-${session.id}-${plateIndex}-${row}`}>
+                                  <th className="row-label">{row}</th>
+                                  {PLATE_COLS.map((col, colIndex) => {
+                                    const cellType = plate.cells[rowIndex]?.[colIndex] ?? DEFAULT_SAMPLE;
+                                    return (
+                                      <td
+                                        key={`workspace-design-cell-${session.id}-${plateIndex}-${row}-${col}`}
+                                        className={`plate-cell sample-${cellType} ${
+                                          isSplit && col === 6 ? 'plate-divider' : ''
+                                        }`}
+                                      >
+                                        {cellType}
+                                      </td>
+                                    );
+                                  })}
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                          <div className="plate-notes-row">
+                            <span className="plate-notes-label">{keywordLabel('notes').toUpperCase()}:</span>
+                            <div className="workspace-readonly-value">
+                              {plate.notes || '—'}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+          );
+        })}
+      </div>
+    </>
+  ) : null;
+
+  const workspaceCollectionContent = workspaceReadOnly ? (
+    <>
+      <aside className="design-sidebar">
+        <div className="control-title">Collection</div>
+        <div className="filter-hint">
+          Multi-session workspace is read-only. Sessions are shown in workspace order.
+        </div>
+      </aside>
+      <div className="collection-panels workspace-session-panels">
+        {workspaceSessionPanels.map((session) => {
+          const collapsed = workspaceCollectionCollapsed[session.id] ?? false;
+          return (
+            <section key={`workspace-collection-${session.id}`} className="workspace-session-panel">
+              <button
+                type="button"
+                className="workspace-session-panel-header"
+                onClick={() => toggleWorkspaceSessionCollapse('collection', session.id)}
+              >
+                <span
+                  className="workspace-session-swatch"
+                  style={{ backgroundColor: session.color }}
+                  aria-hidden
+                />
+                <span className="workspace-session-panel-title">{session.label}</span>
+                <span className="workspace-session-panel-subtitle">
+                  {session.filePath || 'Current workspace session'}
+                </span>
+                <span className={`workspace-session-panel-toggle ${collapsed ? '' : 'expanded'}`}>
+                  ▾
+                </span>
+              </button>
+              {collapsed ? null : (
+                <div className="workspace-session-panel-body">
+                  <div className="workspace-session-meta-grid">
+                    <div className="workspace-session-meta-item">
+                      <span>{keywordLabel('collectionMethod')}</span>
+                      <strong>{session.collectionMetadata.collectionMethod || COLLECTION_METHOD_OPTIONS[0]}</strong>
+                    </div>
+                    <div className="workspace-session-meta-item">
+                      <span>{keywordLabel('date')}</span>
+                      <strong>{session.collectionMetadata.date || '—'}</strong>
+                    </div>
+                    <div className="workspace-session-meta-item">
+                      <span>{keywordLabel('startTime')}</span>
+                      <strong>{session.collectionMetadata.startTime || '—'}</strong>
+                    </div>
+                    <div className="workspace-session-meta-item">
+                      <span>{keywordLabel('endTime')}</span>
+                      <strong>{session.collectionMetadata.endTime || '—'}</strong>
+                    </div>
+                    <div className="workspace-session-meta-item">
+                      <span>{keywordLabel('temperature')}</span>
+                      <strong>{session.collectionMetadata.temperature || '—'}</strong>
+                    </div>
+                    <div className="workspace-session-meta-item">
+                      <span>{keywordLabel('humidity')}</span>
+                      <strong>{session.collectionMetadata.humidity || '—'}</strong>
+                    </div>
+                    <div className="workspace-session-meta-item wide">
+                      <span>{keywordLabel('notes')}</span>
+                      <strong>{session.collectionMetadata.notes || '—'}</strong>
+                    </div>
+                  </div>
+                  {Array.from({ length: session.plateCount }, (_, index) => index).map((plateIndex) => {
+                    const plate = session.designPlates[plateIndex];
+                    if (!plate) {
+                      return null;
+                    }
+                    const isSplit = session.plateAssignments[plateIndex]?.split === true;
+                    const counts = sampleCounts(plate);
+                    return (
+                      <div key={`workspace-collection-plate-${session.id}-${plateIndex}`} className="plate-card">
+                        <div className="plate-header">
+                          <div className="plate-header-main">
+                            <div className="plate-title-text">{plate.label || `${keywordLabel('plate')} ${plateIndex + 1}`}</div>
+                            <div className="plate-tags">
+                              {SAMPLE_OPTIONS.map((option) => (
+                                <span
+                                  key={`workspace-collection-tag-${session.id}-${plateIndex}-${option.type}`}
+                                  className={`plate-tag sample-${option.type}`}
+                                >
+                                  {option.type} {counts[option.type]}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="plate-scroll">
+                          <table className="plate">
+                            <thead>
+                              <tr>
+                                <th className="corner" />
+                                {!isSplit ? (
+                                  <th colSpan={12}>
+                                    <div className="plate-header-label">
+                                      {plate.leftName || `Unassigned ${keywordLabelLower('cryosection')}`}
+                                    </div>
+                                  </th>
+                                ) : (
+                                  <>
+                                    <th colSpan={6} className="plate-divider">
+                                      <div className="plate-header-label">
+                                        {plate.leftName || `Unassigned ${keywordLabelLower('cryosection')}`}
+                                      </div>
+                                    </th>
+                                    <th colSpan={6}>
+                                      <div className="plate-header-label">
+                                        {plate.rightName || `Unassigned ${keywordLabelLower('cryosection')}`}
+                                      </div>
+                                    </th>
+                                  </>
+                                )}
+                              </tr>
+                              <tr>
+                                <th className="corner" />
+                                {PLATE_COLS.map((col) => (
+                                  <th
+                                    key={`workspace-collection-col-${session.id}-${plateIndex}-${col}`}
+                                    className={isSplit && col === 6 ? 'plate-divider' : undefined}
+                                  >
+                                    {col}
+                                  </th>
+                                ))}
+                              </tr>
+                              <tr>
+                                <th className="corner area-row-label">{keywordLabel('area')}</th>
+                                {PLATE_COLS.map((col, colIndex) => (
+                                  <th
+                                    key={`workspace-collection-area-${session.id}-${plateIndex}-${col}`}
+                                    className={isSplit && col === 6 ? 'plate-divider' : undefined}
+                                  >
+                                    <input
+                                      type="text"
+                                      className="collection-area-input"
+                                      value={session.collectionColumnAreas[plateIndex]?.[colIndex] ?? ''}
+                                      disabled
+                                      readOnly
+                                    />
+                                  </th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {PLATE_ROWS.map((row, rowIndex) => (
+                                <tr key={`workspace-collection-row-${session.id}-${plateIndex}-${row}`}>
+                                  <th className="row-label">{row}</th>
+                                  {PLATE_COLS.map((col, colIndex) => {
+                                    const sample = plate.cells[rowIndex]?.[colIndex] ?? DEFAULT_SAMPLE;
+                                    const counts = session.collectionPlates[plateIndex]?.[rowIndex]?.[colIndex] ?? {
+                                      left: 0,
+                                      right: 0,
+                                      rightTouched: false
+                                    };
+                                    return (
+                                      <td
+                                        key={`workspace-collection-cell-${session.id}-${plateIndex}-${row}-${col}`}
+                                        className={`collection-cell sample-${sample} ${
+                                          isSplit && col === 6 ? 'plate-divider' : ''
+                                        }`}
+                                      >
+                                        <div className="collection-split">
+                                          <button type="button" className="collection-half" disabled>
+                                            {counts.left === 0 ? '' : counts.left}
+                                          </button>
+                                          <button type="button" className="collection-half" disabled>
+                                            {counts.right === 1 ? (
+                                              <span className="collection-icon cross">✕</span>
+                                            ) : counts.right > 1 ? (
+                                              (() => {
+                                                const checkCount = Math.min(3, counts.right - 1);
+                                                const positions =
+                                                  checkCount === 1
+                                                    ? ['']
+                                                    : checkCount === 2
+                                                      ? ['stack-left5', 'stack-right5']
+                                                      : ['stack-left10', '', 'stack-right10'];
+                                                return (
+                                                  <span className="collection-icon-stack" aria-hidden>
+                                                    {positions.map((positionClass, positionIndex) => (
+                                                      <span
+                                                        key={`workspace-check-${positionIndex}`}
+                                                        className={`collection-icon check stacked ${positionClass}`.trim()}
+                                                      >
+                                                        ✓
+                                                      </span>
+                                                    ))}
+                                                  </span>
+                                                );
+                                              })()
+                                            ) : (
+                                              ''
+                                            )}
+                                          </button>
+                                        </div>
+                                      </td>
+                                    );
+                                  })}
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                          <div className="plate-notes-row">
+                            <span className="plate-notes-label">{keywordLabel('notes').toUpperCase()}:</span>
+                            <div className="workspace-readonly-value">
+                              {session.collectionPlateNotes[plateIndex] || '—'}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+          );
+        })}
+      </div>
+    </>
+  ) : null;
+
+  const workspaceMetadataContent = workspaceReadOnly ? (
+    <div className="metadata-workspace-list">
+      {workspaceSessionPanels.map((session) => {
+        const collapsed = workspaceMetadataCollapsed[session.id] ?? false;
+        return (
+          <section key={`workspace-metadata-${session.id}`} className="workspace-session-panel">
+            <button
+              type="button"
+              className="workspace-session-panel-header"
+              onClick={() => toggleWorkspaceSessionCollapse('metadata', session.id)}
+            >
+              <span
+                className="workspace-session-swatch"
+                style={{ backgroundColor: session.color }}
+                aria-hidden
+              />
+              <span className="workspace-session-panel-title">{session.label}</span>
+              <span className="workspace-session-panel-subtitle">
+                {session.filePath || 'Current workspace session'}
+              </span>
+              <span className={`workspace-session-panel-toggle ${collapsed ? '' : 'expanded'}`}>
+                ▾
+              </span>
+            </button>
+            {collapsed ? null : (
+              <div className="workspace-session-panel-body">
+                <div className="metadata-table-wrap">
+                  <table className="metadata-table">
+                    <thead>
+                      <tr>
+                        {visibleMetadataColumns.map((column) => (
+                          <th key={`workspace-meta-head-${session.id}-${column.key}`}>{column.label}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {session.metadataRows.length === 0 ? (
+                        <tr>
+                          <td colSpan={visibleMetadataColumns.length} className="metadata-empty-row">
+                            No rows match the current filters.
+                          </td>
+                        </tr>
+                      ) : (
+                        session.metadataRows.map((row) => (
+                          <tr
+                            key={`workspace-meta-row-${session.id}-${row.key}`}
+                            className={`sample-${row.sample}`}
+                            style={row.sample === DISABLED_SAMPLE ? { opacity: 0.5 } : undefined}
+                          >
+                            {visibleMetadataColumns.map((column) => {
+                              if (isContourNameColumnKey(column.key)) {
+                                const value = row.contourDistances?.[column.key];
+                                return (
+                                  <td key={`workspace-meta-cell-${session.id}-${row.key}-${column.key}`}>
+                                    {value !== undefined ? formatNumber(value, 2) : '—'}
+                                  </td>
+                                );
+                              }
+                              const statusTitle = row.manualAssigned
+                                ? 'Manual coordinate pending validation'
+                                : row.inferred && !row.inferenceConfirmed
+                                  ? 'Inferred coordinate pending validation'
+                                  : row.coordStatus === 'ok'
+                                    ? 'Coordinates consistent'
+                                    : row.coordStatus === 'warn'
+                                      ? 'Review required'
+                                      : row.coordStatus === 'bad'
+                                        ? 'Coordinates missing or unexpected'
+                                        : 'Pending';
+                              const statusSymbol =
+                                row.coordStatus === 'ok'
+                                  ? '✓'
+                                  : row.coordStatus === 'warn'
+                                    ? '⚠'
+                                    : row.coordStatus === 'bad'
+                                      ? '✕'
+                                      : '•';
+                              switch (column.key as MetadataColumnKey) {
+                                case 'status':
+                                  return (
+                                    <td key={`workspace-meta-cell-${session.id}-${row.key}-${column.key}`}>
+                                      <span className={`coord-indicator ${row.coordStatus}`} title={statusTitle}>
+                                        {statusSymbol}
+                                      </span>
+                                    </td>
+                                  );
+                                case 'well':
+                                  return (
+                                    <td key={`workspace-meta-cell-${session.id}-${row.key}-${column.key}`}>
+                                      {formatWellDisplay(row.well)}
+                                    </td>
+                                  );
+                                case 'plate':
+                                  return <td key={`workspace-meta-cell-${session.id}-${row.key}-${column.key}`}>{row.plateLabel}</td>;
+                                case 'batch':
+                                  return <td key={`workspace-meta-cell-${session.id}-${row.key}-${column.key}`}>{row.batch || '—'}</td>;
+                                case 'cryosection':
+                                  return <td key={`workspace-meta-cell-${session.id}-${row.key}-${column.key}`}>{row.halfLabel || '—'}</td>;
+                                case 'sampleType':
+                                  return (
+                                    <td key={`workspace-meta-cell-${session.id}-${row.key}-${column.key}`}>
+                                      <span className={`sample-tag sample-${row.sample}`}>{row.sample}</span>
+                                    </td>
+                                  );
+                                case 'microsample':
+                                  return <td key={`workspace-meta-cell-${session.id}-${row.key}-${column.key}`}>{row.code || '—'}</td>;
+                                case 'number':
+                                  return <td key={`workspace-meta-cell-${session.id}-${row.key}-${column.key}`}>{row.number || '—'}</td>;
+                                case 'shape':
+                                  return <td key={`workspace-meta-cell-${session.id}-${row.key}-${column.key}`}>{row.shape || '—'}</td>;
+                                case 'collection':
+                                  return <td key={`workspace-meta-cell-${session.id}-${row.key}-${column.key}`}>{row.collection || '—'}</td>;
+                                case 'collectionMethod':
+                                  return <td key={`workspace-meta-cell-${session.id}-${row.key}-${column.key}`}>{row.collectionMethod || COLLECTION_METHOD_OPTIONS[0]}</td>;
+                                case 'images':
+                                  return <td key={`workspace-meta-cell-${session.id}-${row.key}-${column.key}`}>{row.images || '—'}</td>;
+                                case 'pixelx':
+                                  return <td key={`workspace-meta-cell-${session.id}-${row.key}-${column.key}`}>{row.pixelX !== undefined ? formatNumber(row.pixelX, 0) : '—'}</td>;
+                                case 'pixely':
+                                  return <td key={`workspace-meta-cell-${session.id}-${row.key}-${column.key}`}>{row.pixelY !== undefined ? formatNumber(row.pixelY, 0) : '—'}</td>;
+                                case 'xcoord':
+                                  return <td key={`workspace-meta-cell-${session.id}-${row.key}-${column.key}`}>{row.xCoord !== undefined ? formatNumber(row.xCoord, 2) : '—'}</td>;
+                                case 'ycoord':
+                                  return <td key={`workspace-meta-cell-${session.id}-${row.key}-${column.key}`}>{row.yCoord !== undefined ? formatNumber(row.yCoord, 2) : '—'}</td>;
+                                case 'size':
+                                  return <td key={`workspace-meta-cell-${session.id}-${row.key}-${column.key}`}>{row.size !== undefined ? formatNumber(row.size, 2) : '—'}</td>;
+                                case 'notes':
+                                  return <td key={`workspace-meta-cell-${session.id}-${row.key}-${column.key}`}>{row.notes || '—'}</td>;
+                                default:
+                                  return <td key={`workspace-meta-cell-${session.id}-${row.key}-${column.key}`}>—</td>;
+                              }
+                            })}
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </section>
+        );
+      })}
+    </div>
+  ) : null;
+
   const isSaved = lastSavedSnapshot && !hasUnsavedChanges;
   const saveStatusLabel = isSaved ? 'Saved' : 'Unsaved';
   const activeSessionUsers =
@@ -11360,7 +14235,7 @@ export default function App(): JSX.Element {
               className={`tab-button ${activeTab === 'project' ? 'active' : ''}`}
               onClick={() => setActiveTab('project')}
             >
-              Session
+              {keywordLabel('session')}
             </button>
             <button
               type="button"
@@ -11397,9 +14272,14 @@ export default function App(): JSX.Element {
             >
               Overview
             </button>
+            {activeTab === 'keywordLibrary' ? (
+              <button type="button" className="tab-button active">
+                Keyword Library
+              </button>
+            ) : null}
           </div>
           <div className="session-select">
-            <span className="session-label">Session</span>
+            <span className="session-label">{keywordLabel('session')}</span>
             <select
               value={selectedSessionId ?? ''}
               onChange={(event) =>
@@ -11414,7 +14294,9 @@ export default function App(): JSX.Element {
                 const status = sessionStatusFor(session);
                 return (
                   <option key={session.id} value={session.id}>
-                    {`Session ${index + 1} · ${formatSessionUsers(session.users)} · ${status}`}
+                    {`${keywordLabel('session')} ${index + 1} · ${formatSessionUsers(
+                      session.users
+                    )} · ${status}`}
                   </option>
                 );
               })}
@@ -11431,26 +14313,71 @@ export default function App(): JSX.Element {
       </header>
 
       <div className="content">
-        {activeTab === 'project' ? (
+        {activeTab === 'keywordLibrary' ? (
+          <section className="keyword-layout">
+            <aside className="sidebar keyword-sidebar">
+              <div className="sidebar-header">
+                <div>
+                  <div className="app-title">Keyword Library</div>
+                  <div className="app-subtitle">Local vocabulary</div>
+                </div>
+              </div>
+              <div className="sidebar-status">
+                Replace exported headers and app labels without changing saved session data.
+              </div>
+              <button type="button" className="primary" onClick={saveKeywordLibrary}>
+                Save locally
+              </button>
+              <button type="button" className="secondary danger" onClick={resetKeywordLibrary}>
+                Reset to original
+              </button>
+            </aside>
+            <div className="keyword-card">
+              <div className="plate-title">Keyword replacements</div>
+              <div className="keyword-library-list">
+                {Array.from(keywordGroups.entries()).map(([group, definitions]) => (
+                  <section key={`keyword-group-${group}`} className="keyword-group">
+                    <div className="keyword-group-title">{group}</div>
+                    <div className="keyword-grid">
+                      {definitions.map((definition) => (
+                        <label key={definition.key} className="keyword-field">
+                          <span>{definition.defaultLabel}</span>
+                          <input
+                            type="text"
+                            value={keywordLibrary[definition.key] ?? definition.defaultLabel}
+                            placeholder={definition.defaultLabel}
+                            onChange={(event) =>
+                              updateKeywordLibraryEntry(definition.key, event.target.value)
+                            }
+                          />
+                        </label>
+                      ))}
+                    </div>
+                  </section>
+                ))}
+              </div>
+            </div>
+          </section>
+        ) : activeTab === 'project' ? (
           <section className="project-layout">
             <aside className="sidebar project-sidebar">
               <div className="sidebar-header">
                 <div>
-                  <div className="app-title">Session</div>
-                  <div className="app-subtitle">Define the session scope</div>
+                  <div className="app-title">{keywordLabel('session')}</div>
+                  <div className="app-subtitle">Define the {keywordLabelLower('session')} scope</div>
                 </div>
               </div>
               <div className="sidebar-status">
-                Define cryosections, stage positions, plate count, and plate-to-cryosection
+                Define {keywordPlural('cryosection').toLowerCase()}, stage positions, {keywordLabelLower('plate')} count, and {keywordLabelLower('plate')}-to-{keywordLabelLower('cryosection')}
                 assignments here before moving into Design, Metadata, Collection, and Coordinates.
               </div>
             </aside>
             <div className="project-card">
-              <div className="plate-title">Session setup</div>
+              <div className="plate-title">{keywordLabel('session')} setup</div>
               <div className="project-form project-form-wide">
                 <label className="form-field">
                   <div className="field-label-row">
-                    <span>Session ID</span>
+                    <span>{keywordLabel('session')} ID</span>
                     <span className="field-hint">e.g. S001</span>
                   </div>
                   <input
@@ -11462,8 +14389,10 @@ export default function App(): JSX.Element {
 
                 <div className="project-step-card">
                   <div className="project-step-head">
-                    <div className="project-step-title">1. Cryosections</div>
-                    <div className="project-step-note">Select how many cryosections this session contains.</div>
+                    <div className="project-step-title">1. {keywordPlural('cryosection')}</div>
+                    <div className="project-step-note">
+                      Select how many {keywordPlural('cryosection').toLowerCase()} this {keywordLabelLower('session')} contains.
+                    </div>
                   </div>
                   <div className="project-count-buttons">
                     {[1, 2, 3, 4].map((value) => (
@@ -11493,11 +14422,11 @@ export default function App(): JSX.Element {
                         <div key={`project-cryo-${index}`} className="project-cryosection-card">
                           <label className="form-field">
                             <span className="tooltip-label main-label">
-                              {`Cryosection / Specimen ID ${index + 1}`}
+                              {`${keywordLabel('cryosection')} / ${keywordLabel('specimen')} ID ${index + 1}`}
                               <span className="tooltip-bubble">
                                 {index === 0
-                                  ? 'The first cryosection of this session'
-                                  : `The ${index + 1}th cryosection of this session`}
+                                  ? `The first ${keywordLabelLower('cryosection')} of this ${keywordLabelLower('session')}`
+                                  : `The ${index + 1}th ${keywordLabelLower('cryosection')} of this ${keywordLabelLower('session')}`}
                               </span>
                             </span>
                             <input
@@ -11551,8 +14480,10 @@ export default function App(): JSX.Element {
 
                 <div className="project-step-card">
                   <div className="project-step-head">
-                    <div className="project-step-title">2. Plates</div>
-                    <div className="project-step-note">Select how many 96-well plates are needed, then assign cryosections to full plates or half-plates.</div>
+                    <div className="project-step-title">2. {keywordPlural('plate')}</div>
+                    <div className="project-step-note">
+                      Select how many 96-{keywordLabelLower('well')} {keywordPlural('plate').toLowerCase()} are needed, then assign {keywordPlural('cryosection').toLowerCase()} to full {keywordPlural('plate').toLowerCase()} or half-{keywordPlural('plate').toLowerCase()}.
+                    </div>
                   </div>
                   <div className="project-count-buttons">
                     {[1, 2].map((value) => (
@@ -11562,7 +14493,7 @@ export default function App(): JSX.Element {
                         className={`count-button ${plateCount === value ? 'active' : ''}`}
                         onClick={() => setPlateCount(value as 1 | 2)}
                       >
-                        {value} {value === 1 ? 'plate' : 'plates'}
+                        {value} {value === 1 ? keywordLabelLower('plate') : keywordPlural('plate').toLowerCase()}
                       </button>
                     ))}
                   </div>
@@ -11580,7 +14511,7 @@ export default function App(): JSX.Element {
                           name:
                             cryoIndex === null
                               ? 'Unassigned'
-                              : getCryosectionName(cryoIndex) || `Cryosection ${cryoIndex + 1}`,
+                              : getCryosectionName(cryoIndex) || `${keywordLabel('cryosection')} ${cryoIndex + 1}`,
                           color: getCryosectionColor(cryoIndex),
                           positive: String(
                             effectivePositiveStarts[plateIndex]?.[segmentIndex] ??
@@ -11602,11 +14533,11 @@ export default function App(): JSX.Element {
                             <label className="form-field">
                               <div className="field-label-row">
                                 <span className="tooltip-label main-label">
-                                  {`Plate / Batch ID ${plateIndex + 1}`}
+                                  {`${keywordLabel('plate')} / ${keywordLabel('batch')} ID ${plateIndex + 1}`}
                                   <span className="tooltip-bubble">
                                     {plateIndex === 0
-                                      ? 'Batch code for the first plate'
-                                      : 'Batch code for the second plate'}
+                                      ? `Batch code for the first ${keywordLabelLower('plate')}`
+                                      : `Batch code for the second ${keywordLabelLower('plate')}`}
                                   </span>
                                 </span>
                               </div>
@@ -11660,13 +14591,13 @@ export default function App(): JSX.Element {
                                 <div className="project-segment-editor-title">
                                   {assignment.split
                                     ? activeSegment === 0
-                                      ? 'Selected half-plate: columns 1-6'
-                                      : 'Selected half-plate: columns 7-12'
-                                    : 'Selected segment: full plate'}
+                                      ? `Selected half-${keywordLabelLower('plate')}: ${keywordPlural('column').toLowerCase()} 1-6`
+                                      : `Selected half-${keywordLabelLower('plate')}: ${keywordPlural('column').toLowerCase()} 7-12`
+                                    : `Selected segment: full ${keywordLabelLower('plate')}`}
                                 </div>
                                 <div className="project-segment-editor-grid">
                                   <label className="form-field">
-                                    <span>Cryosection</span>
+                                    <span>{keywordLabel('cryosection')}</span>
                                     <select
                                       value={assignment.segments[activeSegment]?.cryoIndex ?? ''}
                                       onChange={(event) => {
@@ -11692,7 +14623,7 @@ export default function App(): JSX.Element {
                                           key={`segment-cryo-${plateIndex}-${activeSegment}-${index}`}
                                           value={index}
                                         >
-                                          {cryosections[index]?.name || `Cryosection ${index + 1}`}
+                                          {cryosections[index]?.name || `${keywordLabel('cryosection')} ${index + 1}`}
                                         </option>
                                       ))}
                                     </select>
@@ -11894,22 +14825,29 @@ export default function App(): JSX.Element {
             </div>
           </section>
         ) : activeTab === 'design' ? (
-          <section className="design-layout" onClick={clearPlateSelection}>
+          <section
+            className="design-layout"
+            onClick={workspaceReadOnly ? undefined : clearPlateSelection}
+          >
+            {workspaceReadOnly ? (
+              workspaceDesignContent
+            ) : (
+              <>
             <aside className="design-sidebar">
-              <div className="control-title">Sample Type</div>
+              <div className="control-title">{keywordLabel('sampleType')}</div>
               <div className="sample-buttons">
                 {SAMPLE_OPTIONS.map((option) => (
                   <button
                     key={option.type}
                     type="button"
                     className={`sample-button sample-${option.type}`}
-                    disabled={designLocked}
+                    disabled={designInteractionLocked}
                     onClick={(event) => {
                       event.stopPropagation();
                       applySampleType(option.type);
                     }}
                   >
-                    {option.label}
+                    {sampleOptionLabel(option.type)}
                   </button>
                 ))}
               </div>
@@ -11919,7 +14857,7 @@ export default function App(): JSX.Element {
                     type="button"
                     className="sample-button random-button"
                     onClick={randomAssignment}
-                    disabled={designLocked}
+                    disabled={designInteractionLocked}
                   >
                     Random assignment
                   </button>
@@ -11950,7 +14888,7 @@ export default function App(): JSX.Element {
                         step={1}
                         value={randomAssignmentSettings.M}
                         onChange={(event) => updateRandomAssignmentCount('M', event.target.value)}
-                        disabled={designLocked}
+                        disabled={designInteractionLocked}
                       />
                     </div>
                     <div className="random-param-row">
@@ -11963,7 +14901,7 @@ export default function App(): JSX.Element {
                         step={1}
                         value={randomAssignmentSettings.Z}
                         onChange={(event) => updateRandomAssignmentCount('Z', event.target.value)}
-                        disabled={designLocked}
+                        disabled={designInteractionLocked}
                       />
                     </div>
                     <div className="random-param-row">
@@ -11976,7 +14914,7 @@ export default function App(): JSX.Element {
                         step={1}
                         value={randomAssignmentSettings.R}
                         onChange={(event) => updateRandomAssignmentCount('R', event.target.value)}
-                        disabled={designLocked}
+                        disabled={designInteractionLocked}
                       />
                     </div>
                     <div className="random-param-row">
@@ -11989,7 +14927,7 @@ export default function App(): JSX.Element {
                         step={1}
                         value={randomAssignmentSettings.maxControlsPerColumn}
                         onChange={(event) => updateMaxControlsPerColumn(event.target.value)}
-                        disabled={designLocked}
+                        disabled={designInteractionLocked}
                       />
                     </div>
                     <div className="random-param-note">Applies to any R, Z and M.</div>
@@ -12003,7 +14941,7 @@ export default function App(): JSX.Element {
                             sustainabilityMode: event.target.checked
                           }))
                         }
-                        disabled={designLocked}
+                        disabled={designInteractionLocked}
                       />
                       <span>
                         Sustainability mode
@@ -12022,11 +14960,14 @@ export default function App(): JSX.Element {
                   event.stopPropagation();
                   setDesignLocked((prev) => !prev);
                 }}
+                disabled={workspaceReadOnly}
               >
-                {designLocked ? 'Unlock design' : 'Lock design'}
+                {workspaceReadOnly ? 'Workspace read-only' : designLocked ? 'Unlock design' : 'Lock design'}
               </button>
               <div className="filter-hint">
-                {designLocked
+                {workspaceReadOnly
+                  ? 'Multi-session workspace is read-only in Design.'
+                  : designLocked
                   ? 'Design is locked. Unlock to edit.'
                   : 'Click or drag wells to select, then assign a sample type.'}
               </div>
@@ -12045,7 +14986,7 @@ export default function App(): JSX.Element {
                       onClick={() => togglePlateCollapsed(index)}
                     >
                       <div className="plate-title-text">
-                        {plate.label || formatPlateDisplayLabel(index, plateBatchIds[index] ?? '')}
+                        {plate.label || formatLocalPlateLabel(index, plateBatchIds[index] ?? '')}
                       </div>
                       <div className="plate-header-tools">
                         <button
@@ -12096,19 +15037,19 @@ export default function App(): JSX.Element {
                             {!isPlateSplit(index) ? (
                               <th colSpan={12}>
                                 <div className="plate-header-label">
-                                  {plate.leftName || 'Unassigned cryosection'}
+                                  {plate.leftName || `Unassigned ${keywordLabelLower('cryosection')}`}
                                 </div>
                               </th>
                             ) : (
                               <>
                                 <th colSpan={6} className="plate-divider">
                                   <div className="plate-header-label">
-                                    {plate.leftName || 'Unassigned cryosection'}
+                                    {plate.leftName || `Unassigned ${keywordLabelLower('cryosection')}`}
                                   </div>
                                 </th>
                                 <th colSpan={6}>
                                   <div className="plate-header-label">
-                                    {plate.rightName || 'Unassigned cryosection'}
+                                    {plate.rightName || `Unassigned ${keywordLabelLower('cryosection')}`}
                                   </div>
                                 </th>
                               </>
@@ -12172,7 +15113,7 @@ export default function App(): JSX.Element {
                       </table>
                       <div className="plate-notes-row">
                         <label htmlFor={`plate-notes-${index}`} className="plate-notes-label">
-                          NOTES:
+                          {keywordLabel('notes').toUpperCase()}:
                         </label>
                         <input
                           id={`plate-notes-${index}`}
@@ -12182,7 +15123,7 @@ export default function App(): JSX.Element {
                           onClick={(event) => event.stopPropagation()}
                           onFocus={(event) => event.stopPropagation()}
                           onChange={(event) => updatePlate(index, 'notes', event.target.value)}
-                          disabled={designLocked}
+                          disabled={designInteractionLocked}
                         />
                       </div>
                     </div>
@@ -12190,14 +15131,198 @@ export default function App(): JSX.Element {
                 </div>
               )})}
             </div>
+              </>
+            )}
           </section>
         ) : activeTab === 'metadata' ? (
           <section className="metadata-layout">
+            {workspaceReadOnly ? (
+              <>
+                <aside className="sidebar metadata-sidebar">
+                  <div className="sidebar-header">
+                    <div>
+                      <div className="app-title">Metadata</div>
+                      <div className="app-subtitle">Session tables</div>
+                      <div className="filter-hint">
+                        Multi-session workspace is read-only. Filters still apply across all session blocks.
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="search-row metadata-search-row">
+                    <input
+                      ref={metadataSearchRef}
+                      type="text"
+                      placeholder={`Search ${keywordPlural('well').toLowerCase()}, ${keywordPlural('plate').toLowerCase()}...`}
+                      value={metadataSearch}
+                      onChange={(event) => setMetadataSearch(event.target.value)}
+                    />
+                    <select
+                      id="metadata-search-scope"
+                      className="search-scope-select"
+                      value={metadataSearchScope}
+                      onChange={(event) =>
+                        setMetadataSearchScope(event.target.value as MetadataSearchScope)
+                      }
+                    >
+                      <option value="all">All columns</option>
+                      {allMetadataColumns.map((column) => (
+                        <option key={`metadata-search-scope-${column.key}`} value={column.key}>
+                          {column.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="metadata-columns-wrap">
+                    <button
+                      ref={metadataColumnsButtonRef}
+                      type="button"
+                      className="secondary metadata-columns-button"
+                      onClick={() => {
+                        setMetadataColumnsPopupOpen((prev) => !prev);
+                        setMetadataFiltersPopupOpen(false);
+                        setMetadataExportPopupOpen(false);
+                      }}
+                    >
+                      Columns
+                    </button>
+                    {metadataColumnsPopupOpen ? (
+                      <div ref={metadataColumnsPopupRef} className="metadata-columns-popup">
+                        {orderedBaseMetadataColumns.map((column) => (
+                          <div
+                            key={`metadata-col-${column.key}`}
+                            className={`metadata-column-item ${
+                              draggedMetadataColumnKey === column.key ? 'dragging' : ''
+                            }`}
+                            draggable
+                            onDragStart={() => setDraggedMetadataColumnKey(column.key)}
+                            onDragEnd={() => setDraggedMetadataColumnKey(null)}
+                            onDragOver={(event) => {
+                              event.preventDefault();
+                            }}
+                            onDrop={() => {
+                              if (draggedMetadataColumnKey && draggedMetadataColumnKey !== column.key) {
+                                reorderMetadataColumns(draggedMetadataColumnKey, column.key);
+                              }
+                              setDraggedMetadataColumnKey(null);
+                            }}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={metadataColumns[column.key as MetadataColumnKey]}
+                              onChange={() => toggleMetadataColumn(column.key as MetadataColumnKey)}
+                            />
+                            <span className="metadata-column-drag" aria-hidden>
+                              ⋮⋮
+                            </span>
+                            <span>{column.label}</span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                  <div className="metadata-columns-wrap">
+                    <button
+                      ref={metadataFiltersButtonRef}
+                      type="button"
+                      className="secondary metadata-columns-button"
+                      onClick={() => {
+                        setMetadataFiltersPopupOpen((prev) => !prev);
+                        setMetadataColumnsPopupOpen(false);
+                        setMetadataExportPopupOpen(false);
+                      }}
+                    >
+                      Filter
+                    </button>
+                    {metadataFiltersPopupOpen ? (
+                      <div ref={metadataFiltersPopupRef} className="metadata-columns-popup">
+                        <label className="modal-user-option">
+                          <input
+                            type="checkbox"
+                            checked={metadataPlate1}
+                            onChange={(event) => setMetadataPlate1(event.target.checked)}
+                          />
+                          <span>{designPlates[0]?.label || `${keywordLabel('plate')} 1`}</span>
+                        </label>
+                        {!isSinglePlateProject ? (
+                          <label className="modal-user-option">
+                            <input
+                              type="checkbox"
+                              checked={metadataPlate2}
+                              onChange={(event) => setMetadataPlate2(event.target.checked)}
+                            />
+                            <span>{designPlates[1]?.label || `${keywordLabel('plate')} 2`}</span>
+                          </label>
+                        ) : null}
+                        {cryosections.slice(0, cryosectionCount).map((cryo, index) => (
+                          <label key={`metadata-filter-cryo-${index}`} className="modal-user-option">
+                            <input
+                              type="checkbox"
+                              checked={metadataCryoFilters[index]}
+                              onChange={(event) =>
+                                setMetadataCryoFilters((prev) =>
+                                  replaceAt(prev, index, event.target.checked)
+                                )
+                              }
+                            />
+                            <span>{cryo.name || `${keywordLabel('cryosection')} ${index + 1}`}</span>
+                          </label>
+                        ))}
+                        {(['P', 'X', 'M', 'Z', 'R', 'N'] as SampleType[]).map((type) => {
+                          const checked =
+                            type === 'P'
+                              ? metadataP
+                              : type === 'X'
+                                ? metadataX
+                                : type === 'M'
+                                  ? metadataM
+                                  : type === 'Z'
+                                    ? metadataZ
+                                    : type === 'R'
+                                      ? metadataR
+                                      : metadataN;
+                          const setter =
+                            type === 'P'
+                              ? setMetadataP
+                              : type === 'X'
+                                ? setMetadataX
+                                : type === 'M'
+                                  ? setMetadataM
+                                  : type === 'Z'
+                                    ? setMetadataZ
+                                    : type === 'R'
+                                      ? setMetadataR
+                                      : setMetadataN;
+                          return (
+                            <label key={`metadata-filter-sample-${type}`} className="modal-user-option">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={(event) => setter(event.target.checked)}
+                              />
+                              <span>{type}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                  </div>
+                  <button type="button" className="secondary metadata-columns-button" disabled>
+                    Export CSV
+                  </button>
+                </aside>
+                <div className="metadata-table-panel">{workspaceMetadataContent}</div>
+              </>
+            ) : (
+              <>
             <aside className="sidebar metadata-sidebar">
               <div className="sidebar-header">
                 <div>
                   <div className="app-title">Metadata</div>
-                  <div className="app-subtitle">Plate table view</div>
+                  <div className="app-subtitle">{keywordLabel('plate')} table view</div>
+                  {workspaceReadOnly ? (
+                    <div className="filter-hint">Multi-session workspace is read-only in Metadata.</div>
+                  ) : null}
                 </div>
               </div>
 
@@ -12205,7 +15330,7 @@ export default function App(): JSX.Element {
                 <input
                   ref={metadataSearchRef}
                   type="text"
-                  placeholder="Search wells, plates..."
+                  placeholder={`Search ${keywordPlural('well').toLowerCase()}, ${keywordPlural('plate').toLowerCase()}...`}
                   value={metadataSearch}
                   onChange={(event) => setMetadataSearch(event.target.value)}
                 />
@@ -12295,14 +15420,14 @@ export default function App(): JSX.Element {
                 {metadataFiltersPopupOpen ? (
                   <div ref={metadataFiltersPopupRef} className="metadata-filters-popup">
                     <div className="filter-box">
-                      <div className="control-title">Plates</div>
+                      <div className="control-title">{keywordPlural('plate')}</div>
                       <label className="filter-row">
                         <input
                           type="checkbox"
                           checked={metadataPlate1}
                           onChange={(event) => setMetadataPlate1(event.target.checked)}
                         />
-                        <span>{designPlates[0]?.label || 'Plate 1'}</span>
+                        <span>{designPlates[0]?.label || `${keywordLabel('plate')} 1`}</span>
                       </label>
                       {isSinglePlateProject ? null : (
                         <label className="filter-row">
@@ -12311,12 +15436,12 @@ export default function App(): JSX.Element {
                             checked={metadataPlate2}
                             onChange={(event) => setMetadataPlate2(event.target.checked)}
                           />
-                          <span>{designPlates[1]?.label || 'Plate 2'}</span>
+                          <span>{designPlates[1]?.label || `${keywordLabel('plate')} 2`}</span>
                         </label>
                       )}
                     </div>
                     <div className="filter-box">
-                      <div className="control-title">Cryosection</div>
+                      <div className="control-title">{keywordLabel('cryosection')}</div>
                       {assignedCryosectionIndexes.map((cryoIndex) => (
                         <label key={`metadata-cryo-filter-${cryoIndex}`} className="filter-row">
                           <input
@@ -12329,20 +15454,28 @@ export default function App(): JSX.Element {
                             }
                           />
                           <span>
-                            {getCryosectionName(cryoIndex) || `Cryosection ${cryoIndex + 1}`}
+                            {getCryosectionName(cryoIndex) || `${keywordLabel('cryosection')} ${cryoIndex + 1}`}
                           </span>
                         </label>
                       ))}
                     </div>
                     <div className="filter-box">
-                      <div className="control-title">Sample Type</div>
+                      <div className="control-title">{keywordLabel('sampleType')}</div>
                       <label className="filter-row">
                         <input
                           type="checkbox"
                           checked={metadataP}
                           onChange={(event) => setMetadataP(event.target.checked)}
                         />
-                        <span>Positive (P)</span>
+                        <span>{sampleOptionLabel('P')}</span>
+                      </label>
+                      <label className="filter-row">
+                        <input
+                          type="checkbox"
+                          checked={metadataX}
+                          onChange={(event) => setMetadataX(event.target.checked)}
+                        />
+                        <span>{sampleOptionLabel('X')}</span>
                       </label>
                       <label className="filter-row">
                         <input
@@ -12350,7 +15483,7 @@ export default function App(): JSX.Element {
                           checked={metadataM}
                           onChange={(event) => setMetadataM(event.target.checked)}
                         />
-                        <span>Membrane (M)</span>
+                        <span>{sampleOptionLabel('M')}</span>
                       </label>
                       <label className="filter-row">
                         <input
@@ -12358,7 +15491,7 @@ export default function App(): JSX.Element {
                           checked={metadataZ}
                           onChange={(event) => setMetadataZ(event.target.checked)}
                         />
-                        <span>Lysis (Z)</span>
+                        <span>{sampleOptionLabel('Z')}</span>
                       </label>
                       <label className="filter-row">
                         <input
@@ -12366,7 +15499,7 @@ export default function App(): JSX.Element {
                           checked={metadataR}
                           onChange={(event) => setMetadataR(event.target.checked)}
                         />
-                        <span>Reaction (R)</span>
+                        <span>{sampleOptionLabel('R')}</span>
                       </label>
                       <label className="filter-row">
                         <input
@@ -12374,7 +15507,7 @@ export default function App(): JSX.Element {
                           checked={metadataN}
                           onChange={(event) => setMetadataN(event.target.checked)}
                         />
-                        <span>Not used (N)</span>
+                        <span>{sampleOptionLabel('N')}</span>
                       </label>
                     </div>
                   </div>
@@ -12395,7 +15528,7 @@ export default function App(): JSX.Element {
               ) : controlCoordinateIssues > 0 || positiveMissingCoordinates > 0 ? (
                 <div className="main-alert error">
                   {controlCoordinateIssues > 0
-                    ? `${controlCoordinateIssues} R/Z control wells contain coordinates. `
+                    ? `${controlCoordinateIssues} X/R/Z control wells contain coordinates. `
                     : ''}
                   {positiveMissingCoordinates > 0
                     ? `${positiveMissingCoordinates} positive samples are missing coordinates.`
@@ -12459,7 +15592,7 @@ export default function App(): JSX.Element {
                                     : row.coordStatus === 'warn'
                                       ? hasLinkedData
                                         ? 'Warning state. Click for link actions.'
-                                        : 'R/Z controls contain collection data'
+                                        : 'X/R/Z controls contain collection data'
                                       : row.coordStatus === 'bad'
                                         ? hasLinkedData
                                           ? 'Coordinate mismatch. Click for link actions.'
@@ -12540,7 +15673,49 @@ export default function App(): JSX.Element {
                                 </td>
                               );
                             case 'microsample':
-                              return <td key={`${row.key}-${column.key}`}>{row.code || '—'}</td>;
+                              return (
+                                <td key={`${row.key}-${column.key}`}>
+                                  {row.autoCode ? (
+                                    editingMetadataCodeKey === row.cellKey ? (
+                                      <input
+                                        className="metadata-code-input"
+                                        type="text"
+                                        value={metadataCodeDraft}
+                                        autoFocus
+                                        disabled={workspaceReadOnly}
+                                        onChange={(event) => setMetadataCodeDraft(event.target.value)}
+                                        onBlur={() =>
+                                          commitEditingMetadataCode(row.cellKey, row.autoCode)
+                                        }
+                                        onKeyDown={(event) => {
+                                          if (event.key === 'Enter') {
+                                            event.preventDefault();
+                                            commitEditingMetadataCode(row.cellKey, row.autoCode);
+                                          } else if (event.key === 'Escape') {
+                                            event.preventDefault();
+                                            cancelEditingMetadataCode();
+                                          }
+                                        }}
+                                      />
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        className={`metadata-code-button ${
+                                          row.code !== row.autoCode ? 'edited' : ''
+                                        }`}
+                                        disabled={workspaceReadOnly}
+                                        onClick={() =>
+                                          startEditingMetadataCode(row.cellKey, row.code || row.autoCode)
+                                        }
+                                      >
+                                        {row.code || '—'}
+                                      </button>
+                                    )
+                                  ) : (
+                                    row.code || '—'
+                                  )}
+                                </td>
+                              );
                             case 'number':
                               return <td key={`${row.key}-${column.key}`}>{row.number || '—'}</td>;
                             case 'shape':
@@ -12594,6 +15769,7 @@ export default function App(): JSX.Element {
                                     className="notes-input"
                                     type="text"
                                     value={row.notes}
+                                    disabled={workspaceReadOnly}
                                     onChange={(event) =>
                                       updateMetadataNote(
                                         `${row.plateIndex}-${row.rowIndex}-${row.colIndex}`,
@@ -12613,177 +15789,187 @@ export default function App(): JSX.Element {
                 </table>
               </div>
             </div>
+              </>
+            )}
           </section>
         ) : activeTab === 'collection' ? (
           <section className="collection-layout">
-            <aside className="design-sidebar">
-              <div className="control-title">Collection</div>
-              <div className="filter-hint">
-                Click left/right halves to increment. Right-click to decrement.
-              </div>
-              <div className="collection-meta-box">
-                <div className="control-title">Import</div>
-                <button type="button" className="secondary" onClick={handleImportCollectionCsv}>
-                  Import collection CSV
-                </button>
-                <div className="filter-hint">
-                  Required columns: Plate/LMBatch, Well/PlatePosition, Area/Size, Collection/Notes Collection
-                </div>
-              </div>
-              <div className="collection-lock-box">
-                <button
-                  type="button"
-                  className={`sample-button lock-button ${collectionPlateLocks[0] ? 'active' : ''}`}
-                  onClick={() =>
-                    setCollectionPlateLocks((prev) => [!prev[0], prev[1]])
-                  }
-                >
-                  {collectionPlateLocks[0]
-                    ? `Unlock ${designPlates[0]?.label || 'Plate 1'}`
-                    : `Lock ${designPlates[0]?.label || 'Plate 1'}`}
-                </button>
-                {isSinglePlateProject ? null : (
-                  <button
-                    type="button"
-                    className={`sample-button lock-button ${collectionPlateLocks[1] ? 'active' : ''}`}
-                    onClick={() =>
-                      setCollectionPlateLocks((prev) => [prev[0], !prev[1]])
-                    }
-                  >
-                    {collectionPlateLocks[1]
-                      ? `Unlock ${designPlates[1]?.label || 'Plate 2'}`
-                      : `Lock ${designPlates[1]?.label || 'Plate 2'}`}
-                  </button>
-                )}
-              </div>
-              <div className="collection-meta-box">
-                <div className="control-title">Collection Metadata</div>
-                <label className="collection-meta-field">
-                  <span>Collection method</span>
-                  <select
-                    value={collectionMetadata.collectionMethod}
-                    onChange={(event) =>
-                      updateCollectionMetadataField('collectionMethod', event.target.value)
-                    }
-                  >
-                    {COLLECTION_METHOD_OPTIONS.map((option) => (
-                      <option key={option} value={option}>
-                        {option}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="collection-meta-field">
-                  <span>Date</span>
-                  <input
-                    type="date"
-                    value={collectionMetadata.date}
-                    onChange={(event) => updateCollectionMetadataField('date', event.target.value)}
-                  />
-                </label>
-                <div className="collection-meta-inline-row">
-                  <label className="collection-meta-field compact">
-                    <span className="tooltip-label">
-                      Start time
-                      <span className="tooltip-bubble">
-                        Automatically set when the first collection-related field is modified.
-                        You can edit it manually to override.
-                      </span>
-                    </span>
-                    <input
-                      type="time"
-                      step={1}
-                      value={collectionMetadata.startTime}
-                      onChange={(event) =>
-                        updateCollectionTimeField('startTime', event.target.value)
+            {workspaceReadOnly ? (
+              workspaceCollectionContent
+            ) : (
+              <>
+                <aside className="design-sidebar">
+                  <div className="control-title">Collection</div>
+                  <div className="filter-hint">
+                    Click left/right halves to increment. Right-click to decrement.
+                  </div>
+                  <div className="collection-meta-box">
+                    <div className="control-title">Import</div>
+                    <button
+                      type="button"
+                      className="secondary"
+                      onClick={handleImportCollectionCsv}
+                    >
+                      Import collection CSV
+                    </button>
+                    <div className="filter-hint">
+                      Required columns: {keywordLabel('plate')}/LMBatch, {keywordLabel('well')}/PlatePosition, {keywordLabel('area')}/{keywordLabel('size')}, {keywordLabel('collection')}/Notes Collection
+                    </div>
+                  </div>
+                  <div className="collection-lock-box">
+                    <button
+                      type="button"
+                      className={`sample-button lock-button ${collectionPlateLocks[0] ? 'active' : ''}`}
+                      onClick={() =>
+                        setCollectionPlateLocks((prev) => [!prev[0], prev[1]])
                       }
-                    />
-                  </label>
-                  <label className="collection-meta-field compact">
-                    <span className="tooltip-label">
-                      End time
-                      <span className="tooltip-bubble">
-                        Automatically updated on each collection-related change.
-                        You can edit it manually to override.
-                      </span>
-                    </span>
-                    <input
-                      type="time"
-                      step={1}
-                      value={collectionMetadata.endTime}
-                      onChange={(event) =>
-                        updateCollectionTimeField('endTime', event.target.value)
-                      }
-                    />
-                  </label>
-                </div>
-                <div className="collection-meta-inline-row">
-                  <label className="collection-meta-field compact">
-                    <span>Temperature</span>
-                    <div className="collection-meta-unit-input">
-                      <input
-                        type="text"
-                        value={collectionMetadata.temperature}
+                    >
+                      {collectionPlateLocks[0]
+                        ? `Unlock ${designPlates[0]?.label || `${keywordLabel('plate')} 1`}`
+                        : `Lock ${designPlates[0]?.label || `${keywordLabel('plate')} 1`}`}
+                    </button>
+                    {isSinglePlateProject ? null : (
+                      <button
+                        type="button"
+                        className={`sample-button lock-button ${collectionPlateLocks[1] ? 'active' : ''}`}
+                        onClick={() =>
+                          setCollectionPlateLocks((prev) => [prev[0], !prev[1]])
+                        }
+                      >
+                        {collectionPlateLocks[1]
+                          ? `Unlock ${designPlates[1]?.label || `${keywordLabel('plate')} 2`}`
+                          : `Lock ${designPlates[1]?.label || `${keywordLabel('plate')} 2`}`}
+                      </button>
+                    )}
+                  </div>
+                  <div className="collection-meta-box">
+                    <div className="control-title">{keywordLabel('collection')} Metadata</div>
+                    <label className="collection-meta-field">
+                      <span>{keywordLabel('collectionMethod')}</span>
+                      <select
+                        value={collectionMetadata.collectionMethod}
                         onChange={(event) =>
-                          updateCollectionMetadataField('temperature', event.target.value)
+                          updateCollectionMetadataField('collectionMethod', event.target.value)
+                        }
+                      >
+                        {COLLECTION_METHOD_OPTIONS.map((option) => (
+                          <option key={option} value={option}>
+                            {option}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="collection-meta-field">
+                      <span>{keywordLabel('date')}</span>
+                      <input
+                        type="date"
+                        value={collectionMetadata.date}
+                        onChange={(event) => updateCollectionMetadataField('date', event.target.value)}
+                      />
+                    </label>
+                    <div className="collection-meta-inline-row">
+                      <label className="collection-meta-field compact">
+                        <span className="tooltip-label">
+                          {keywordLabel('startTime')}
+                          <span className="tooltip-bubble">
+                            Automatically set when the first collection-related field is modified.
+                            You can edit it manually to override.
+                          </span>
+                        </span>
+                        <input
+                          type="time"
+                          step={1}
+                          value={collectionMetadata.startTime}
+                          onChange={(event) =>
+                            updateCollectionTimeField('startTime', event.target.value)
+                          }
+                        />
+                      </label>
+                      <label className="collection-meta-field compact">
+                        <span className="tooltip-label">
+                          {keywordLabel('endTime')}
+                          <span className="tooltip-bubble">
+                            Automatically updated on each collection-related change.
+                            You can edit it manually to override.
+                          </span>
+                        </span>
+                        <input
+                          type="time"
+                          step={1}
+                          value={collectionMetadata.endTime}
+                          onChange={(event) =>
+                            updateCollectionTimeField('endTime', event.target.value)
+                          }
+                        />
+                      </label>
+                    </div>
+                    <div className="collection-meta-inline-row">
+                      <label className="collection-meta-field compact">
+                        <span>{keywordLabel('temperature')}</span>
+                        <div className="collection-meta-unit-input">
+                          <input
+                            type="text"
+                            value={collectionMetadata.temperature}
+                            onChange={(event) =>
+                              updateCollectionMetadataField('temperature', event.target.value)
+                            }
+                          />
+                          <span className="collection-meta-unit">°C</span>
+                        </div>
+                      </label>
+                      <label className="collection-meta-field compact">
+                        <span>{keywordLabel('humidity')}</span>
+                        <div className="collection-meta-unit-input">
+                          <input
+                            type="text"
+                            value={collectionMetadata.humidity}
+                            onChange={(event) =>
+                              updateCollectionMetadataField('humidity', event.target.value)
+                            }
+                          />
+                          <span className="collection-meta-unit">%</span>
+                        </div>
+                      </label>
+                    </div>
+                    <label className="collection-meta-field">
+                      <span>{keywordLabel('notes')}</span>
+                      <textarea
+                        rows={4}
+                        value={collectionMetadata.notes}
+                        onChange={(event) =>
+                          updateCollectionMetadataField('notes', event.target.value)
                         }
                       />
-                      <span className="collection-meta-unit">°C</span>
+                    </label>
+                  </div>
+                </aside>
+                <div className="collection-panels">
+                  {collectionAreaHint ? (
+                    <div className="collection-area-hint-overlay" role="status" aria-live="polite">
+                      <div className="collection-area-hint-popup">{collectionAreaHint}</div>
                     </div>
-                  </label>
-                  <label className="collection-meta-field compact">
-                    <span>Humidity</span>
-                    <div className="collection-meta-unit-input">
-                      <input
-                        type="text"
-                        value={collectionMetadata.humidity}
-                        onChange={(event) =>
-                          updateCollectionMetadataField('humidity', event.target.value)
-                        }
-                      />
-                      <span className="collection-meta-unit">%</span>
-                    </div>
-                  </label>
-                </div>
-                <label className="collection-meta-field">
-                  <span>Notes</span>
-                  <textarea
-                    rows={4}
-                    value={collectionMetadata.notes}
-                    onChange={(event) =>
-                      updateCollectionMetadataField('notes', event.target.value)
+                  ) : null}
+                  {visiblePlateIndexes.map((index) => {
+                    const plate = designPlates[index];
+                    if (!plate) {
+                      return null;
                     }
-                  />
-                </label>
-              </div>
-            </aside>
-            <div className="collection-panels">
-              {collectionAreaHint ? (
-                <div className="collection-area-hint-overlay" role="status" aria-live="polite">
-                  <div className="collection-area-hint-popup">{collectionAreaHint}</div>
-                </div>
-              ) : null}
-              {visiblePlateIndexes.map((index) => {
-                const plate = designPlates[index];
-                if (!plate) {
-                  return null;
-                }
-                const hasConsecutiveAreaDuplicate = PLATE_COLS.some((_, colIndex) =>
-                  hasDuplicateCollectionArea(index, colIndex)
-                );
-                const collectionWarningForPlate =
-                  collectionColumnWarning?.plateIndex === index
-                    ? collectionColumnWarning.message
-                    : null;
-                return (
-                <div key={`collection-${index}`} className={`plate-card ${collapsedPlates[index] ? 'collapsed' : ''}`}>
+                    const hasConsecutiveAreaDuplicate = PLATE_COLS.some((_, colIndex) =>
+                      hasDuplicateCollectionArea(index, colIndex)
+                    );
+                    const collectionWarningForPlate =
+                      collectionColumnWarning?.plateIndex === index
+                        ? collectionColumnWarning.message
+                        : null;
+                    return (
+                    <div key={`collection-${index}`} className={`plate-card ${collapsedPlates[index] ? 'collapsed' : ''}`}>
                   <div className="plate-header">
                     <div
                       className="plate-header-main"
                       onClick={() => togglePlateCollapsed(index)}
                     >
                       <div className="plate-title-text">
-                        {plate.label || formatPlateDisplayLabel(index, plateBatchIds[index] ?? '')}
+                        {plate.label || formatLocalPlateLabel(index, plateBatchIds[index] ?? '')}
                       </div>
                       <div className="plate-tags">
                         {(() => {
@@ -12821,19 +16007,19 @@ export default function App(): JSX.Element {
                           {!isPlateSplit(index) ? (
                             <th colSpan={12}>
                               <div className="plate-header-label">
-                                {plate.leftName || 'Unassigned cryosection'}
+                                {plate.leftName || `Unassigned ${keywordLabelLower('cryosection')}`}
                               </div>
                             </th>
                           ) : (
                             <>
                               <th colSpan={6} className="plate-divider">
                                 <div className="plate-header-label">
-                                  {plate.leftName || 'Unassigned cryosection'}
+                                  {plate.leftName || `Unassigned ${keywordLabelLower('cryosection')}`}
                                 </div>
                               </th>
                               <th colSpan={6}>
                                 <div className="plate-header-label">
-                                  {plate.rightName || 'Unassigned cryosection'}
+                                  {plate.rightName || `Unassigned ${keywordLabelLower('cryosection')}`}
                                 </div>
                               </th>
                             </>
@@ -12885,7 +16071,7 @@ export default function App(): JSX.Element {
                                   onChange={(event) =>
                                     updateCollectionColumnArea(index, colIndex, event.target.value)
                                   }
-                                  disabled={areaInputDisabled}
+                                  disabled={workspaceReadOnly || areaInputDisabled}
                                   placeholder="0000"
                                   title={
                                     areaIsDuplicate
@@ -12911,6 +16097,7 @@ export default function App(): JSX.Element {
                               const areaIsDuplicate = hasDuplicateCollectionArea(index, colIndex);
                               const sampleDisabled = sample === DISABLED_SAMPLE;
                               const columnLocked =
+                                workspaceReadOnly ||
                                 collectionPlateLocks[index] ||
                                 areaMissing ||
                                 areaIsDuplicate ||
@@ -13116,14 +16303,14 @@ export default function App(): JSX.Element {
                     ) : null}
                     <div className="plate-notes-row">
                       <label htmlFor={`collection-plate-notes-${index}`} className="plate-notes-label">
-                        NOTES:
+                        {keywordLabel('notes').toUpperCase()}:
                       </label>
                       <input
                         id={`collection-plate-notes-${index}`}
                         type="text"
                         className="plate-notes-input"
                         value={collectionPlateNotes[index] ?? ''}
-                        disabled={collectionPlateLocks[index]}
+                        disabled={workspaceReadOnly || collectionPlateLocks[index]}
                         onClick={(event) => event.stopPropagation()}
                         onFocus={(event) => event.stopPropagation()}
                         onChange={(event) =>
@@ -13141,14 +16328,16 @@ export default function App(): JSX.Element {
                   </div>
                   )}
                 </div>
-              )})}
-            </div>
+                  )})}
+                </div>
+              </>
+            )}
           </section>
         ) : activeTab === 'overview' ? (
           <section className="overview-layout">
             <div className="viewer-sidebar">
               <div className="cryo-selector-box">
-                <span className="control-title">Cryosection</span>
+                <span className="control-title">{keywordLabel('cryosection')}</span>
                 <div ref={overviewCryosectionMenuRef} className="cryo-selector-control">
                   <button
                     type="button"
@@ -13162,7 +16351,7 @@ export default function App(): JSX.Element {
                   >
                     <span>
                       {getCryosectionName(activeCryosection) ||
-                        `Cryosection ${activeCryosection + 1}`}
+                        `${keywordLabel('cryosection')} ${activeCryosection + 1}`}
                     </span>
                     <span className="cryo-selector-caret" aria-hidden>
                       ▾
@@ -13182,7 +16371,7 @@ export default function App(): JSX.Element {
                             setOverviewCryosectionMenuOpen(false);
                           }}
                         >
-                          {getCryosectionName(cryoIndex) || `Cryosection ${cryoIndex + 1}`}
+                          {getCryosectionName(cryoIndex) || `${keywordLabel('cryosection')} ${cryoIndex + 1}`}
                         </button>
                       ))}
                     </div>
@@ -13316,6 +16505,33 @@ export default function App(): JSX.Element {
                     </>
                   )}
                 </div>
+                {workspaceSessionEntries.length > 0 ? (
+                  <div className="control-box">
+                    <div className="control-title">Workspace sessions</div>
+                    <div className="workspace-session-list">
+                      {workspaceSessionEntries.map((entry) => (
+                        <label key={`overview-${entry.id}`} className="workspace-session-row">
+                          <input
+                            type="checkbox"
+                            checked={workspaceSessionVisibility[entry.id] !== false}
+                            onChange={(event) =>
+                              updateWorkspaceSessionVisibility(entry.id, event.target.checked)
+                            }
+                          />
+                          <span
+                            className="workspace-session-swatch"
+                            style={{ backgroundColor: entry.color }}
+                            aria-hidden
+                          />
+                          <span className="workspace-session-label" title={entry.label}>
+                            {entry.label}
+                          </span>
+                          <span className="workspace-session-count">{entry.count}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
                 <div className={`control-box ${overviewAlignmentCollapsed ? 'collapsed' : ''}`}>
                   <button
                     type="button"
@@ -13828,10 +17044,10 @@ export default function App(): JSX.Element {
                   {overviewCrop.cuts.length > 0 ? (
                     <div className="crop-cuts">
                       <div className="crop-header">
-                        <span>Well</span>
-                        <span>Microsample</span>
-                        <span>Pixel X</span>
-                        <span>Pixel Y</span>
+                        <span>{keywordLabel('well')}</span>
+                        <span>{keywordLabel('microsample')}</span>
+                        <span>{keywordLabel('pixelX')}</span>
+                        <span>{keywordLabel('pixelY')}</span>
                       </div>
                       {overviewCrop.cuts.map((cut) => (
                         <div key={`crop-${cut.id}`} className="crop-row">
@@ -13866,7 +17082,7 @@ export default function App(): JSX.Element {
           <div className="viewer-layout">
             <div className="viewer-sidebar">
               <div className="cryo-selector-box">
-                <span className="control-title">Cryosection</span>
+                <span className="control-title">{keywordLabel('cryosection')}</span>
                 <div ref={coordinatesCryosectionMenuRef} className="cryo-selector-control">
                   <button
                     type="button"
@@ -13880,7 +17096,7 @@ export default function App(): JSX.Element {
                   >
                     <span>
                       {getCryosectionName(activeCryosection) ||
-                        `Cryosection ${activeCryosection + 1}`}
+                        `${keywordLabel('cryosection')} ${activeCryosection + 1}`}
                     </span>
                     <span className="cryo-selector-caret" aria-hidden>
                       ▾
@@ -13900,7 +17116,7 @@ export default function App(): JSX.Element {
                             setCoordinatesCryosectionMenuOpen(false);
                           }}
                         >
-                          {getCryosectionName(cryoIndex) || `Cryosection ${cryoIndex + 1}`}
+                          {getCryosectionName(cryoIndex) || `${keywordLabel('cryosection')} ${cryoIndex + 1}`}
                         </button>
                       ))}
                     </div>
@@ -13941,8 +17157,8 @@ export default function App(): JSX.Element {
                         <span>
                           {coordinatesReuseSource !== null
                             ? getCryosectionName(coordinatesReuseSource) ||
-                              `Cryosection ${coordinatesReuseSource + 1}`
-                            : 'No other cryosections'}
+                              `${keywordLabel('cryosection')} ${coordinatesReuseSource + 1}`
+                            : `No other ${keywordPlural('cryosection').toLowerCase()}`}
                         </span>
                         <span className="cryo-selector-caret" aria-hidden>
                           ▾
@@ -13962,7 +17178,7 @@ export default function App(): JSX.Element {
                                 setCoordinatesReuseMenuOpen(false);
                               }}
                             >
-                              {getCryosectionName(cryoIndex) || `Cryosection ${cryoIndex + 1}`}
+                              {getCryosectionName(cryoIndex) || `${keywordLabel('cryosection')} ${cryoIndex + 1}`}
                             </button>
                           ))}
                         </div>
@@ -14061,6 +17277,34 @@ export default function App(): JSX.Element {
                 </div>
               ) : null}
 
+                {workspaceSessionEntries.length > 0 ? (
+                  <div className="control-box">
+                    <div className="control-title">Workspace sessions</div>
+                    <div className="workspace-session-list">
+                      {workspaceSessionEntries.map((entry) => (
+                        <label key={entry.id} className="workspace-session-row">
+                          <input
+                            type="checkbox"
+                            checked={workspaceSessionVisibility[entry.id] !== false}
+                            onChange={(event) =>
+                              updateWorkspaceSessionVisibility(entry.id, event.target.checked)
+                            }
+                          />
+                          <span
+                            className="workspace-session-swatch"
+                            style={{ backgroundColor: entry.color }}
+                            aria-hidden
+                          />
+                          <span className="workspace-session-label" title={entry.label}>
+                            {entry.label}
+                          </span>
+                          <span className="workspace-session-count">{entry.count}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+
                 <div className="control-box">
                   <div className="control-title">Stitching Controls</div>
                   <label className="control-row">
@@ -14097,7 +17341,7 @@ export default function App(): JSX.Element {
               ) : controlCoordinateIssues > 0 || positiveMissingCoordinates > 0 ? (
                 <div className="main-alert error">
                   {controlCoordinateIssues > 0
-                    ? `${controlCoordinateIssues} R/Z control wells contain coordinates. `
+                    ? `${controlCoordinateIssues} X/R/Z control wells contain coordinates. `
                     : ''}
                   {positiveMissingCoordinates > 0
                     ? `${positiveMissingCoordinates} positive samples are missing coordinates.`
@@ -14244,6 +17488,7 @@ export default function App(): JSX.Element {
                             <colgroup>
                               <col className="col-check" />
                               <col className="col-check" />
+                              <col className="col-session" />
                               <col className="col-plate" />
                               <col className="col-well" />
                               <col className="col-code" />
@@ -14254,9 +17499,10 @@ export default function App(): JSX.Element {
                               <tr>
                                 <th className="cutpoint-head check">POI</th>
                                 <th className="cutpoint-head check">IMA</th>
-                                <th className="cutpoint-head">Plate</th>
-                                <th className="cutpoint-head">Well</th>
-                                <th className="cutpoint-head">Microsample</th>
+                                <th className="cutpoint-head">{keywordLabel('session')}</th>
+                                <th className="cutpoint-head">{keywordLabel('plate')}</th>
+                                <th className="cutpoint-head">{keywordLabel('well')}</th>
+                                <th className="cutpoint-head">{keywordLabel('microsample')}</th>
                                 <th className="cutpoint-head">Pre image</th>
                                 <th className="cutpoint-head">Post image</th>
                               </tr>
@@ -14297,6 +17543,7 @@ export default function App(): JSX.Element {
                                         }
                                       />
                                     </td>
+                                    <td className="cutpoint-cell session">{row.sessionLabel}</td>
                                     <td className="cutpoint-cell plate">{row.plateLabel}</td>
                                     <td className="cutpoint-cell well">{formatWellDisplay(row.well)}</td>
                                     <td className="cutpoint-cell code">{row.code || '—'}</td>
@@ -14423,23 +17670,39 @@ export default function App(): JSX.Element {
               Select one or more users for this session.
             </div>
             <div className="modal-user-list">
-              {availableUsers.map((user, index) => (
-                <label key={user} className="modal-user-option">
-                  <input
-                    type="checkbox"
-                    checked={selectedSessionUsers.includes(user)}
-                    onChange={(event) => handleToggleSessionUser(user, event.target.checked)}
-                    autoFocus={index === 0}
-                  />
-                  <span>{user}</span>
-                </label>
-              ))}
+              {availableUsers.length === 0 ? (
+                <div className="modal-empty-state">No saved users yet.</div>
+              ) : (
+                availableUsers.map((user, index) => (
+                  <div key={user} className="modal-user-option">
+                    <label className="modal-user-choice">
+                      <input
+                        type="checkbox"
+                        checked={selectedSessionUsers.includes(user)}
+                        onChange={(event) => handleToggleSessionUser(user, event.target.checked)}
+                        autoFocus={index === 0}
+                      />
+                      <span>{user}</span>
+                    </label>
+                    <button
+                      type="button"
+                      className="modal-user-remove"
+                      onClick={() => handleRemoveUser(user)}
+                      aria-label={`Remove ${user}`}
+                      title={`Remove ${user}`}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))
+              )}
             </div>
             <div className="modal-add-user">
               <input
                 type="text"
                 value={newUserInput}
                 placeholder="Add user..."
+                autoFocus={availableUsers.length === 0}
                 onChange={(event) => setNewUserInput(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter') {
@@ -14501,6 +17764,140 @@ export default function App(): JSX.Element {
           </div>
         </div>
       )}
+      {workspaceLoadPrompt && (
+        <div className="modal-backdrop">
+          <div className="modal-card workspace-load-modal">
+            <div className="modal-title">Load multiple sessions</div>
+            <div className="modal-text">
+              Sort the sessions and assign a color to each one. The first session in the list is
+              used internally to seed the workspace, but all sessions are treated equally and
+              remain read-only in Design, Collection, and Metadata.
+            </div>
+            <div className="workspace-load-list">
+              {workspaceLoadPromptSessions.map((session, sessionIndex) => (
+                <div key={session.id} className="workspace-load-row">
+                  <div className="workspace-load-order">{sessionIndex + 1}</div>
+                  <div>
+                    <div className="workspace-load-row-header">
+                      <div className="workspace-load-row-title">
+                        <span
+                          className="workspace-session-swatch"
+                          style={{ backgroundColor: session.color }}
+                          aria-hidden
+                        />
+                        <span>
+                          {session.label}
+                          {sessionIndex === 0 ? ' · first in order' : ''}
+                        </span>
+                      </div>
+                      <div className="workspace-load-row-controls">
+                        <label className="workspace-load-color-control" title="Session color">
+                          <span>Color</span>
+                          <input
+                            type="color"
+                            value={session.color}
+                            onChange={(event) =>
+                              setWorkspaceLoadPrompt((prev) =>
+                                prev
+                                  ? {
+                                      ...prev,
+                                      sessions: prev.sessions.map((item) =>
+                                        item.id === session.id
+                                          ? { ...item, color: event.target.value }
+                                          : item
+                                      )
+                                    }
+                                  : prev
+                              )
+                            }
+                          />
+                        </label>
+                        <button
+                          type="button"
+                          className="secondary workspace-load-move"
+                          onClick={() =>
+                            setWorkspaceLoadPrompt((prev) =>
+                              prev
+                                ? {
+                                    ...prev,
+                                    sessions: moveWorkspaceSession(
+                                      prev.sessions,
+                                      sessionIndex,
+                                      sessionIndex - 1
+                                    )
+                                  }
+                                : prev
+                            )
+                          }
+                          disabled={sessionIndex === 0}
+                        >
+                          ↑
+                        </button>
+                        <button
+                          type="button"
+                          className="secondary workspace-load-move"
+                          onClick={() =>
+                            setWorkspaceLoadPrompt((prev) =>
+                              prev
+                                ? {
+                                    ...prev,
+                                    sessions: moveWorkspaceSession(
+                                      prev.sessions,
+                                      sessionIndex,
+                                      sessionIndex + 1
+                                    )
+                                  }
+                                : prev
+                            )
+                          }
+                          disabled={sessionIndex === workspaceLoadPromptSessions.length - 1}
+                        >
+                          ↓
+                        </button>
+                      </div>
+                    </div>
+                    <div className="workspace-load-row-subtitle">{session.filePath}</div>
+                    <div className="workspace-load-row-tags">
+                      {session.cryosectionNames.map((name) => (
+                        <span key={`${session.id}-${name}`} className="workspace-load-tag">
+                          {name}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+            {workspaceLoadPrompt.sharedCryosections.length > 0 ? (
+              <div className="modal-text">
+                Shared cryosections:{' '}
+                {workspaceLoadPrompt.sharedCryosections.join(', ')}
+              </div>
+            ) : null}
+            {workspaceLoadPrompt.warnings.length > 0 ? (
+              <div className="modal-user-list">
+                {workspaceLoadPrompt.warnings.map((warning) => (
+                  <div key={warning} className="modal-text">
+                    {warning}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => setWorkspaceLoadPrompt(null)}
+              >
+                Cancel
+              </button>
+              <button type="button" className="primary" onClick={handleConfirmWorkspaceLoad}>
+                Load workspace
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {statusPrompt && (
         <div className="modal-backdrop">
           <div className="modal-card">
@@ -14510,7 +17907,7 @@ export default function App(): JSX.Element {
                 : 'Linked image actions'}
             </div>
             <div className="modal-text">
-              Well {formatWellDisplay(statusPrompt.well)}
+              {keywordLabel('well')} {formatWellDisplay(statusPrompt.well)}
               {statusPrompt.code ? ` · ${statusPrompt.code}` : ''}
             </div>
             <div className="modal-text">
@@ -14563,7 +17960,8 @@ export default function App(): JSX.Element {
             <div className="modal-text">
               This will remove the imported LIF files, CSV files, parsed image links, and cached
               coordinates for{' '}
-              {getCryosectionName(activeCryosection) || `Cryosection ${activeCryosection + 1}`}.
+              {getCryosectionName(activeCryosection) ||
+                `${keywordLabel('cryosection')} ${activeCryosection + 1}`}.
             </div>
             <div className="modal-text">
               Use this when a cryosection needs a clean reimport or a fresh `Reuse from` rebuild.
@@ -14582,6 +17980,84 @@ export default function App(): JSX.Element {
                 onClick={handleDetachCoordinateSources}
               >
                 Detach sources
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {cropCsvOutsidePrompt && (
+        <div className="modal-backdrop">
+          <div className="modal-card">
+            <div className="modal-title">Samples outside crop</div>
+            <div className="modal-text">
+              {cropCsvOutsidePrompt.outsideRows.length} sample
+              {cropCsvOutsidePrompt.outsideRows.length === 1 ? '' : 's'} fall outside the crop
+              box.
+            </div>
+            <div className="modal-text">
+              Include them in the CSV with empty pixel coordinates, or remove them from the CSV
+              output.
+            </div>
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => setCropCsvOutsidePrompt(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => void handleCropCsvOutsideChoice(false)}
+              >
+                Remove from CSV
+              </button>
+              <button
+                type="button"
+                className="primary"
+                onClick={() => void handleCropCsvOutsideChoice(true)}
+              >
+                Include empty rows
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {cropCsvControlPrompt && (
+        <div className="modal-backdrop">
+          <div className="modal-card">
+            <div className="modal-title">Controls without coordinates</div>
+            <div className="modal-text">
+              {cropCsvControlPrompt.controlRows.length} X/R/Z control
+              {cropCsvControlPrompt.controlRows.length === 1 ? '' : 's'} do not have
+              coordinates.
+            </div>
+            <div className="modal-text">
+              Include them in the CSV with empty pixel coordinates, or omit them from the CSV
+              output.
+            </div>
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => setCropCsvControlPrompt(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => void handleCropCsvControlChoice(false)}
+              >
+                Omit controls
+              </button>
+              <button
+                type="button"
+                className="primary"
+                onClick={() => void handleCropCsvControlChoice(true)}
+              >
+                Include controls
               </button>
             </div>
           </div>
@@ -14874,7 +18350,7 @@ export default function App(): JSX.Element {
   );
 }
   const sampleCounts = (plate: PlateConfig) => {
-    const counts: Record<SampleType, number> = { P: 0, M: 0, Z: 0, R: 0, N: 0 };
+    const counts: Record<SampleType, number> = { P: 0, X: 0, M: 0, Z: 0, R: 0, N: 0 };
     for (const row of plate.cells) {
       for (const cell of row) {
         counts[cell] += 1;

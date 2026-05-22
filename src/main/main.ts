@@ -5,6 +5,7 @@ import { parseLifFile, loadLifImage, loadLifThumbnail } from './lif';
 import {
   LifImageResponse,
   LmdLoadResponse,
+  LmdLoadMultipleResponse,
   LifParseResponse,
   LmdSaveRequest,
   LmdSaveResponse,
@@ -23,7 +24,11 @@ const normalizeProjectPath = (candidate: string | null | undefined): string | nu
     return null;
   }
   const trimmed = candidate.trim();
-  if (!trimmed || trimmed.startsWith('-') || !trimmed.toLowerCase().endsWith('.lmd')) {
+  if (
+    !trimmed ||
+    trimmed.startsWith('-') ||
+    !/\.(lmd|mlmd)$/i.test(trimmed)
+  ) {
     return null;
   }
   return trimmed;
@@ -184,6 +189,13 @@ function createWindow(): void {
             mainWindow?.webContents.send('lif:requestLoad');
           }
         },
+        {
+          label: 'Load Multiple Sessions...',
+          accelerator: 'CmdOrCtrl+Shift+O',
+          click: () => {
+            mainWindow?.webContents.send('lif:requestLoadMultiple');
+          }
+        },
         { type: 'separator' },
         {
           label: 'Save',
@@ -197,6 +209,13 @@ function createWindow(): void {
           accelerator: 'CmdOrCtrl+Shift+S',
           click: () => {
             mainWindow?.webContents.send('lif:requestSave', 'saveAs');
+          }
+        },
+        { type: 'separator' },
+        {
+          label: 'Keyword Library',
+          click: () => {
+            mainWindow?.webContents.send('lif:requestKeywordLibrary');
           }
         },
         ...(process.platform === 'darwin' ? [] : [{ type: 'separator' }, { role: 'quit' }])
@@ -431,15 +450,17 @@ ipcMain.handle(
 ipcMain.handle(
   'lif:saveProject',
   async (_event, request: LmdSaveRequest): Promise<LmdSaveResponse> => {
-    const { payload, filePath: providedPath, forceDialog } = request;
+    const { payload, filePath: providedPath, forceDialog, fileType = 'lmd' } = request;
     let filePath = providedPath;
+    const extension = fileType === 'mlmd' ? 'mlmd' : 'lmd';
+    const label = fileType === 'mlmd' ? 'LMDmapper Workspace' : 'LMDmapper Session';
 
     if (forceDialog || !filePath) {
       const result = await dialog.showSaveDialog({
-        title: 'Save LMDmapper session',
-        defaultPath: 'LMDmapper.lmd',
+        title: fileType === 'mlmd' ? 'Save LMDmapper workspace' : 'Save LMDmapper session',
+        defaultPath: `LMDmapper.${extension}`,
         filters: [
-          { name: 'LMDmapper Session', extensions: ['lmd'] },
+          { name: label, extensions: [extension] },
           { name: 'All Files', extensions: ['*'] }
         ]
       });
@@ -454,8 +475,8 @@ ipcMain.handle(
       return { error: 'No file path provided.' };
     }
 
-    if (!filePath.toLowerCase().endsWith('.lmd')) {
-      filePath = `${filePath}.lmd`;
+    if (!filePath.toLowerCase().endsWith(`.${extension}`)) {
+      filePath = `${filePath}.${extension}`;
     }
 
     try {
@@ -503,10 +524,10 @@ ipcMain.handle(
 
 ipcMain.handle('lif:loadProject', async (): Promise<LmdLoadResponse> => {
   const result = await dialog.showOpenDialog({
-    title: 'Load LMDmapper session',
+    title: 'Load LMDmapper session or workspace',
     properties: ['openFile'],
     filters: [
-      { name: 'LMDmapper Session', extensions: ['lmd'] },
+      { name: 'LMDmapper Files', extensions: ['lmd', 'mlmd'] },
       { name: 'All Files', extensions: ['*'] }
     ]
   });
@@ -517,6 +538,32 @@ ipcMain.handle('lif:loadProject', async (): Promise<LmdLoadResponse> => {
 
   const filePath = result.filePaths[0];
   return loadProjectFile(filePath);
+});
+
+ipcMain.handle('lif:loadProjects', async (): Promise<LmdLoadMultipleResponse> => {
+  const result = await dialog.showOpenDialog({
+    title: 'Load LMDmapper sessions',
+    properties: ['openFile', 'multiSelections'],
+    filters: [
+      { name: 'LMDmapper Session', extensions: ['lmd'] },
+      { name: 'All Files', extensions: ['*'] }
+    ]
+  });
+
+  if (result.canceled || result.filePaths.length === 0) {
+    return { canceled: true };
+  }
+
+  const entries: LmdLoadResponse[] = await Promise.all(
+    result.filePaths.map((filePath) => loadProjectFile(filePath))
+  );
+  const firstError = entries.find((entry): entry is LmdLoadResponse & { error: string } => 'error' in entry);
+  if (firstError) {
+    return { error: firstError.error };
+  }
+  return {
+    entries: entries.filter((entry): entry is { filePath: string; data: Record<string, unknown> } => 'filePath' in entry)
+  };
 });
 
 ipcMain.handle('lif:loadProjectFromPath', async (_event, filePath: string): Promise<LmdLoadResponse> => {

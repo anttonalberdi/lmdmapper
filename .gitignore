@@ -23,5 +23,17 @@ yarn-error.log*
 .env.*
 !.env.example
 
+# Local microscopy/session data
+*.lif
+*.lmd
+*.mlmd
+toy.lif
+!examples/**/*.lif
+!examples/**/*.lmd
+!examples/**/*.mlmd
+
+# Local manuscript drafts
+manuscript/
+
 # TypeScript
 *.tsbuildinfo

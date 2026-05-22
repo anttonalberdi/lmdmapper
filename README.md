@@ -1,6 +1,13 @@
-# LMDmapper (v1.2.5)
+# LMDmapper (v1.4.4)
 
-Leica `.lif` spatial visualization tool built with Electron + Vite + React + TypeScript.
+LMDmapper is an open-source desktop tool for curating Leica laser
+microdissection sessions. It links `.lif` image metadata, microscope CSV
+exports, plate layouts, spatial coordinates, and downstream sample metadata in a
+local Electron application built with Vite, React, and TypeScript.
+
+Source code is hosted on GitHub so the application can be cloned, audited, and
+modified. Packaged installers are generated locally in `release/`, which is
+intentionally ignored by Git.
 
 ## Features
 - Open one or more `.lif` files into a single project
@@ -9,11 +16,13 @@ Leica `.lif` spatial visualization tool built with Electron + Vite + React + Typ
 - Spatial layout canvas using stage positions
 
 ## Requirements
-- Node.js 18+ (for Electron 29)
+- Node.js 18+
 - npm
 
-## Install
+## Clone and Install
 ```bash
+git clone https://github.com/anttonalberdi/lmdmapper.git
+cd lmdmapper
 npm install
 ```
 
@@ -24,14 +33,23 @@ npm run dev
 
 This launches Vite for the renderer, compiles the main process, and starts Electron.
 
-## Build installers
+## Build from Source
+Validate the source build without creating installers:
+
+```bash
+npm run lint
+npm run build:renderer
+npm run build:main
+```
+
+## Build Installers
 ```bash
 npm run build
 ```
 
 Electron Builder will generate macOS and Windows targets in `release/`.
 
-## Release build workflow
+## Release Build Workflow
 1. Create the release notes file: `release-notes/<version>.md`
 2. Run:
 ```bash
@@ -51,11 +69,22 @@ npm run generate:fixture
 ```
 
 This writes `toy.lif` in the project root. Use **Import LIF files** in the app to load it.
+The generated file is ignored by Git.
 
-## Limitations (v1.2.5)
+## Limitations (v1.4.4)
 - Only supports 2D RGB, 8-bit, interleaved data (C=3)
-- Elements with other formats are listed but show “Unsupported format (v1.2.5)”
+- Elements with other formats are listed but show “Unsupported format (v1.4.4)”
 - Spatial layout requires StageposX/StageposY metadata
+
+## Contributing and License
+
+Contributions are welcome through GitHub issues and pull requests. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for setup, validation, and large-file
+guidance.
+
+LMDmapper is released under the [MIT License](LICENSE). If you use it in
+research, cite this repository; citation metadata is provided in
+[CITATION.cff](CITATION.cff).
 
 ## Notes
 The parser expects an XML header (`LMSDataContainerHeader`) followed by raw mem block data.

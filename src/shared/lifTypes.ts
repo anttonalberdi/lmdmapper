@@ -61,6 +61,7 @@ export type LmdSaveRequest = {
   payload: Record<string, unknown>;
   filePath?: string;
   forceDialog?: boolean;
+  fileType?: 'lmd' | 'mlmd';
 };
 
 export type LmdLoadResult = {
@@ -77,6 +78,15 @@ export type LmdLoadCanceled = {
 };
 
 export type LmdLoadResponse = LmdLoadResult | LmdLoadError | LmdLoadCanceled;
+
+export type LmdLoadMultipleResult = {
+  entries: LmdLoadResult[];
+};
+
+export type LmdLoadMultipleResponse =
+  | LmdLoadMultipleResult
+  | LmdLoadError
+  | LmdLoadCanceled;
 
 export type LmdExportRequest = {
   data: string;

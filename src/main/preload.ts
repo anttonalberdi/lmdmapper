@@ -5,13 +5,16 @@ import type {
   LmdExportRequest,
   LmdExportResponse,
   LmdLoadResponse,
+  LmdLoadMultipleResponse,
   LmdSaveRequest,
   LmdSaveResponse
 } from '../shared/lifTypes';
 
 const loadRequestListeners = new Set<(filePath?: string) => void>();
+const loadMultipleRequestListeners = new Set<() => void>();
 let pendingLoadRequestPath: string | undefined;
 let hasPendingLoadRequest = false;
+let hasPendingLoadMultipleRequest = false;
 
 ipcRenderer.on('lif:requestLoad', (_event, filePath?: string) => {
   const normalizedPath = typeof filePath === 'string' && filePath.trim().length ? filePath : undefined;
@@ -22,6 +25,16 @@ ipcRenderer.on('lif:requestLoad', (_event, filePath?: string) => {
   }
   for (const listener of loadRequestListeners) {
     listener(normalizedPath);
+  }
+});
+
+ipcRenderer.on('lif:requestLoadMultiple', () => {
+  if (!loadMultipleRequestListeners.size) {
+    hasPendingLoadMultipleRequest = true;
+    return;
+  }
+  for (const listener of loadMultipleRequestListeners) {
+    listener();
   }
 });
 
@@ -49,6 +62,7 @@ const api = {
   loadProject: (): Promise<LmdLoadResponse> => ipcRenderer.invoke('lif:loadProject'),
   loadProjectFromPath: (filePath: string): Promise<LmdLoadResponse> =>
     ipcRenderer.invoke('lif:loadProjectFromPath', filePath),
+  loadProjects: (): Promise<LmdLoadMultipleResponse> => ipcRenderer.invoke('lif:loadProjects'),
   onSaveRequest: (handler: (mode: 'save' | 'saveAs') => void): (() => void) => {
     const listener = (_event: Electron.IpcRendererEvent, mode: 'save' | 'saveAs') => {
       handler(mode);
@@ -69,10 +83,26 @@ const api = {
       loadRequestListeners.delete(listener);
     };
   },
+  onLoadMultipleRequest: (handler: () => void): (() => void) => {
+    const listener = () => handler();
+    loadMultipleRequestListeners.add(listener);
+    if (hasPendingLoadMultipleRequest) {
+      hasPendingLoadMultipleRequest = false;
+      queueMicrotask(listener);
+    }
+    return () => {
+      loadMultipleRequestListeners.delete(listener);
+    };
+  },
   onNewProject: (handler: () => void): (() => void) => {
     const listener = () => handler();
     ipcRenderer.on('lif:requestNewProject', listener);
     return () => ipcRenderer.removeListener('lif:requestNewProject', listener);
+  },
+  onKeywordLibraryRequest: (handler: () => void): (() => void) => {
+    const listener = () => handler();
+    ipcRenderer.on('lif:requestKeywordLibrary', listener);
+    return () => ipcRenderer.removeListener('lif:requestKeywordLibrary', listener);
   },
   onCloseRequest: (handler: () => void): (() => void) => {
     const listener = () => handler();

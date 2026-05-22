@@ -4,6 +4,7 @@ import type {
   LmdExportRequest,
   LmdExportResponse,
   LmdLoadResponse,
+  LmdLoadMultipleResponse,
   LmdSaveRequest,
   LmdSaveResponse
 } from '@shared/lifTypes';
@@ -25,9 +26,12 @@ type LifApi = {
   exportFile: (request: LmdExportRequest) => Promise<LmdExportResponse>;
   loadProject: () => Promise<LmdLoadResponse>;
   loadProjectFromPath: (filePath: string) => Promise<LmdLoadResponse>;
+  loadProjects: () => Promise<LmdLoadMultipleResponse>;
   onSaveRequest: (handler: (mode: 'save' | 'saveAs') => void) => () => void;
   onLoadRequest: (handler: (filePath?: string) => void) => () => void;
+  onLoadMultipleRequest: (handler: () => void) => () => void;
   onNewProject: (handler: () => void) => () => void;
+  onKeywordLibraryRequest: (handler: () => void) => () => void;
   onCloseRequest: (handler: () => void) => () => void;
   confirmClose: () => void;
 };

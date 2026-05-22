@@ -202,6 +202,14 @@ const writeChecksums = () => {
 
 const syncVersionStrings = () => {
   const releaseDate = new Date().toISOString().slice(0, 10);
+  const upsertYamlScalar = (content, field, value) => {
+    const pattern = new RegExp(`^${field}:\\s*.*$`, 'm');
+    if (pattern.test(content)) {
+      return content.replace(pattern, `${field}: ${value}`);
+    }
+    return `${content.trimEnd()}\n${field}: ${value}\n`;
+  };
+
   replaceInFile('package.json', (content) =>
     content
       .replace(/"buildDate":\s*"[^"]*"/, `"buildDate": "${releaseDate}"`)
@@ -219,6 +227,15 @@ const syncVersionStrings = () => {
   replaceInFile('src/renderer/App.tsx', (content) =>
     content.replace(/version:\s*'[^']*',/, `version: '${options.version}',`)
   );
+  if (fs.existsSync(path.join(ROOT, 'CITATION.cff'))) {
+    replaceInFile('CITATION.cff', (content) =>
+      upsertYamlScalar(
+        upsertYamlScalar(content, 'version', options.version),
+        'date-released',
+        releaseDate
+      )
+    );
+  }
 };
 
 const main = () => {

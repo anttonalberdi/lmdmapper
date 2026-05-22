@@ -3,9 +3,45 @@
 All notable changes to this project are documented in this file.
 
 ## [Unreleased]
-Target: 1.2.6
+Target: 1.4.5
 
-- Log all new changes here for the upcoming 1.2.6 release.
+- Log all new changes here for the upcoming 1.4.5 release.
+
+## [1.4.4] - 2026-05-14
+
+- Overview crop CSV export now prompts before adding X/R/Z controls that have no coordinates, so users can include them as blank-coordinate rows or omit them.
+
+## [1.4.3] - 2026-05-13
+
+- Overview crop output now includes an `Export CSV` action with plate, well, microsample, and crop-relative `Pixel X` / `Pixel Y` values.
+- Overview crop CSV export now prompts when samples fall outside the crop box, letting users remove those rows or include them with blank pixel coordinates.
+- Overview crop image export now renders the visible pre/post overview layers and scales the saved crop to the configured output size.
+
+## [1.4.1] - 2026-05-12
+
+- Start sessions with an empty local user directory instead of bundled user names, and let users add or remove locally stored names from the start-session dialog.
+- Add a Keyword Library view, accessible from the File menu, for saving local replacements for session, cryosection, specimen, plate, well, metadata, collection, and sample-type wording.
+- Apply Keyword Library labels across the setup, Design, Metadata, Collection, Coordinates, and Overview views, including CSV export headers and collection CSV import prompts.
+- Collection CSV import now accepts customized Keyword Library headers while still supporting the legacy `LMBatch`, `PlatePosition`, `Size`, and `Notes Collection` aliases.
+
+## [1.4.0] - 2026-04-29
+
+- Multi-session loading now detects all cryosection names shared across all selected sessions, instead of only reporting overlaps against the first loaded session.
+- Multi-session loading now lets the user sort the selected sessions and assign a color to each one before opening the workspace, and the chosen order/colors are persisted in `.mlmd` workspaces.
+- Multi-session workspaces can now be saved and reopened as independent `.mlmd` files instead of overwriting one of the underlying `.lmd` sessions.
+- Design, Collection, and Metadata now switch to workspace mode and render each loaded session as its own collapsible read-only block in workspace order, instead of showing only the first session.
+
+## [1.3.1] - 2026-04-23
+
+- Retarget the next development cycle to `1.3.1` for the multi-session workspace work, instead of continuing under the `1.2.x` line.
+- Add a new `Load Multiple Sessions...` file-menu action and preload/main-process support for selecting multiple saved `.lmd` sessions at once.
+- Start the multi-session workspace implementation with a review modal, a primary editable base session, and additional read-only overlay sessions loaded from saved session data.
+- Coordinates and Overview can now merge cut points from matching cryosection names across loaded sessions, draw per-session color rings, and toggle session visibility from a workspace-session legend.
+- Removing an image link from Metadata now preserves the stored CSV pixel coordinates for that well, so orphan reassignment still opens with the correct predicted cut location instead of falling back to `0 / 0`.
+- The Metadata `Microsample` column is now click-to-edit for automatically generated codes, so users can override a code inline while keeping the cell read-only until activated.
+- Design, Collection, and Metadata now support a manual `Positive control (X)` sample type with pink styling, control-style cryosection suffixing, negative-series numbering, and no-coordinate control validation behavior aligned with the existing negative controls.
+- Overview contours are now stored relative to the aligned overview image, so they move and scale with the image instead of staying locked to cut-point stage coordinates, while contour distance calculations continue to use the resolved stage positions.
+- CSV-to-plate interpretation now respects `Not used (N)` wells and fully disabled columns, skipping them when consuming source columns and leaving disabled wells empty instead of shifting later CSV assignments into the wrong plate positions.
 
 ## [1.2.5] - 2026-04-16
 

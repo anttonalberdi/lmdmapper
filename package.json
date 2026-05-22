@@ -1,10 +1,18 @@
 {
   "name": "lmdmapper",
-  "version": "1.2.5",
-  "buildDate": "2026-04-16",
-  "description": "LMDmapper - Leica .lif spatial visualization tool (v1.2.5)",
-  "author": "",
+  "version": "1.4.4",
+  "buildDate": "2026-05-14",
+  "description": "LMDmapper - Leica .lif spatial visualization tool (v1.4.4)",
+  "author": "Antton Alberdi",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/anttonalberdi/lmdmapper.git"
+  },
+  "bugs": {
+    "url": "https://github.com/anttonalberdi/lmdmapper/issues"
+  },
+  "homepage": "https://github.com/anttonalberdi/lmdmapper#readme",
   "main": "dist-electron/main/main.js",
   "type": "commonjs",
   "scripts": {
