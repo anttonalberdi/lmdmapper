@@ -113,6 +113,7 @@
     },
     "linux": {
       "icon": "build/icon.png",
+      "maintainer": "Antton Alberdi <antton.alberdi@sund.ku.dk>",
       "category": "Science",
       "synopsis": "Leica .lif spatial visualization tool",
       "target": [
