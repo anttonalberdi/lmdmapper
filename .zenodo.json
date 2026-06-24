@@ -1,0 +1,28 @@
+{
+  "title": "LMDmapper",
+  "upload_type": "software",
+  "access_right": "open",
+  "license": "MIT",
+  "description": "LMDmapper is an open-source desktop application for curating Leica laser microdissection sessions by linking .lif image metadata, microscope export tables, plate layouts, spatial coordinates, and downstream sample metadata. This record archives the released application binaries (macOS, Windows, Linux) together with the source code for the tagged release. Source and issues: https://github.com/anttonalberdi/lmdmapper",
+  "creators": [
+    {
+      "name": "Alberdi, Antton",
+      "affiliation": "University of Copenhagen"
+    }
+  ],
+  "keywords": [
+    "laser microdissection",
+    "Leica LIF",
+    "microscopy metadata",
+    "spatial biology",
+    "sample tracking",
+    "Electron"
+  ],
+  "related_identifiers": [
+    {
+      "identifier": "https://github.com/anttonalberdi/lmdmapper",
+      "relation": "isSupplementTo",
+      "scheme": "url"
+    }
+  ]
+}

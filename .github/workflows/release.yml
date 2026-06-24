@@ -97,10 +97,17 @@ jobs:
     name: Publish GitHub release
     needs: build
     runs-on: ubuntu-latest
+    env:
+      ZENODO_TOKEN: ${{ secrets.ZENODO_TOKEN }}
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
 
       - name: Download artifacts
         uses: actions/download-artifact@v4
@@ -138,3 +145,26 @@ jobs:
             "${target_args[@]}" \
             --title "LMDmapper ${version}" \
             --notes-file "$notes"
+
+      - name: Stage files for Zenodo (binaries + source)
+        if: ${{ env.ZENODO_TOKEN != '' }}
+        env:
+          RELEASE_VERSION: ${{ github.event.inputs.version || github.ref_name }}
+        shell: bash
+        run: |
+          version="${RELEASE_VERSION#v}"
+          mkdir -p zenodo-upload
+          # Built installers + checksums.
+          cp release-assets/lmdmapper_* "zenodo-upload/"
+          cp "release-assets/SHA256SUMS-${version}.txt" "zenodo-upload/" || true
+          # Source archive of the tagged commit.
+          git archive --format=zip --prefix="lmdmapper-${version}/" \
+            -o "zenodo-upload/lmdmapper_${version}_source.zip" HEAD
+
+      - name: Archive release to Zenodo
+        id: zenodo
+        if: ${{ env.ZENODO_TOKEN != '' }}
+        env:
+          ZENODO_CONCEPT_RECID: ${{ vars.ZENODO_CONCEPT_RECID }}
+          ZENODO_BASE: ${{ vars.ZENODO_BASE }}
+        run: node scripts/zenodo-publish.js --dir zenodo-upload

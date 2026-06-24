@@ -112,6 +112,7 @@
       "buildUniversalInstaller": false
     },
     "linux": {
+      "icon": "build/icon.png",
       "category": "Science",
       "synopsis": "Leica .lif spatial visualization tool",
       "target": [
