@@ -12,6 +12,27 @@ Source code is hosted on GitHub so the application can be cloned, audited, and
 modified. Packaged installers and archives are generated locally in `release/`,
 which is intentionally ignored by Git.
 
+## Download
+
+Pre-built installers for **v1.4.5** are archived on Zenodo
+([DOI 10.5281/zenodo.20827563](https://doi.org/10.5281/zenodo.20827563)). Pick
+the build for your platform; the right-hand column lists alternative formats.
+
+| Platform | Architecture | Installer | Other formats |
+| --- | --- | --- | --- |
+| macOS | Apple Silicon (arm64) | [`.dmg`](https://zenodo.org/records/20827563/files/lmdmapper_1.4.5_arm64_mac.dmg?download=1) | [`.zip`](https://zenodo.org/records/20827563/files/lmdmapper_1.4.5_arm64_mac.zip?download=1) |
+| macOS | Intel (x64) | [`.dmg`](https://zenodo.org/records/20827563/files/lmdmapper_1.4.5_x64_mac.dmg?download=1) | [`.zip`](https://zenodo.org/records/20827563/files/lmdmapper_1.4.5_x64_mac.zip?download=1) |
+| Windows | x64 | [`.exe`](https://zenodo.org/records/20827563/files/lmdmapper_1.4.5_x64_win.exe?download=1) | [`.zip`](https://zenodo.org/records/20827563/files/lmdmapper_1.4.5_x64_win.zip?download=1) |
+| Windows | arm64 | [`.exe`](https://zenodo.org/records/20827563/files/lmdmapper_1.4.5_arm64_win.exe?download=1) | [`.zip`](https://zenodo.org/records/20827563/files/lmdmapper_1.4.5_arm64_win.zip?download=1) |
+| Windows | 32-bit (ia32) | [`.exe`](https://zenodo.org/records/20827563/files/lmdmapper_1.4.5_ia32_win.exe?download=1) | [`.zip`](https://zenodo.org/records/20827563/files/lmdmapper_1.4.5_ia32_win.zip?download=1) |
+| Linux | x64 (x86_64) | [`.AppImage`](https://zenodo.org/records/20827563/files/lmdmapper_1.4.5_x86_64_linux.AppImage?download=1) | [`.deb`](https://zenodo.org/records/20827563/files/lmdmapper_1.4.5_amd64_linux.deb?download=1) · [`.rpm`](https://zenodo.org/records/20827563/files/lmdmapper_1.4.5_x86_64_linux.rpm?download=1) · [`.tar.gz`](https://zenodo.org/records/20827563/files/lmdmapper_1.4.5_x64_linux.tar.gz?download=1) |
+| Linux | arm64 (aarch64) | [`.AppImage`](https://zenodo.org/records/20827563/files/lmdmapper_1.4.5_arm64_linux.AppImage?download=1) | [`.deb`](https://zenodo.org/records/20827563/files/lmdmapper_1.4.5_arm64_linux.deb?download=1) · [`.rpm`](https://zenodo.org/records/20827563/files/lmdmapper_1.4.5_aarch64_linux.rpm?download=1) · [`.tar.gz`](https://zenodo.org/records/20827563/files/lmdmapper_1.4.5_arm64_linux.tar.gz?download=1) |
+
+Verify downloads against [`SHA256SUMS-1.4.5.txt`](https://zenodo.org/records/20827563/files/SHA256SUMS-1.4.5.txt?download=1).
+For other releases, browse the
+[all-versions Zenodo record](https://doi.org/10.5281/zenodo.20827562) or the
+[GitHub releases page](https://github.com/anttonalberdi/lmdmapper/releases).
+
 ## Features
 - Open one or more `.lif` files into a single project
 - Parse and list image elements with metadata
