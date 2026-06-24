@@ -168,3 +168,25 @@ jobs:
           ZENODO_CONCEPT_RECID: ${{ vars.ZENODO_CONCEPT_RECID }}
           ZENODO_BASE: ${{ vars.ZENODO_BASE }}
         run: node scripts/zenodo-publish.js --dir zenodo-upload
+
+      - name: Update README download links on main
+        if: ${{ env.ZENODO_TOKEN != '' && steps.zenodo.outputs.version_recid != '' }}
+        env:
+          ZENODO_BASE: ${{ vars.ZENODO_BASE }}
+          RECID: ${{ steps.zenodo.outputs.version_recid }}
+          RELEASE_VERSION: ${{ github.event.inputs.version || github.ref_name }}
+        shell: bash
+        run: |
+          version="${RELEASE_VERSION#v}"
+          git config user.name "anttonalberdi"
+          git config user.email "anttonalberdi@users.noreply.github.com"
+          git fetch origin main
+          git checkout -B main origin/main
+          node scripts/update-readme-downloads.js --recid "$RECID" --version "$version"
+          if git diff --quiet -- README.md; then
+            echo "README download section already current."
+            exit 0
+          fi
+          git add README.md
+          git commit -m "Update README download links for ${version}"
+          git push origin main

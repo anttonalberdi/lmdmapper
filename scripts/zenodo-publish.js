@@ -219,6 +219,8 @@ const main = async () => {
   const conceptRecid = published.conceptrecid;
   const conceptDoi = published.conceptdoi || published.metadata?.conceptdoi;
   const htmlUrl = published.links?.record_html || published.links?.html;
+  // Record id of this published version (used to build README download links).
+  const versionRecid = published.record_id || (doi ? doi.split('.').pop() : '');
 
   console.log('\n=== Zenodo publish complete ===');
   console.log(`Version DOI   : ${doi}`);
@@ -235,7 +237,7 @@ const main = async () => {
   if (process.env.GITHUB_OUTPUT) {
     fs.appendFileSync(
       process.env.GITHUB_OUTPUT,
-      `version_doi=${doi}\nconcept_doi=${conceptDoi || ''}\nconcept_recid=${conceptRecid}\nrecord_url=${htmlUrl}\n`
+      `version_doi=${doi}\nconcept_doi=${conceptDoi || ''}\nconcept_recid=${conceptRecid}\nversion_recid=${versionRecid}\nrecord_url=${htmlUrl}\n`
     );
   }
   if (process.env.GITHUB_STEP_SUMMARY) {

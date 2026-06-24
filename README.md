@@ -12,11 +12,12 @@ Source code is hosted on GitHub so the application can be cloned, audited, and
 modified. Packaged installers and archives are generated locally in `release/`,
 which is intentionally ignored by Git.
 
+<!-- BEGIN DOWNLOADS -->
 ## Download
 
 Pre-built installers for **v1.4.5** are archived on Zenodo
-([DOI 10.5281/zenodo.20827563](https://doi.org/10.5281/zenodo.20827563)). Pick
-the build for your platform; the right-hand column lists alternative formats.
+([DOI 10.5281/zenodo.20827563](https://doi.org/10.5281/zenodo.20827563)). Pick the build for your
+platform; the right-hand column lists alternative formats.
 
 | Platform | Architecture | Installer | Other formats |
 | --- | --- | --- | --- |
@@ -29,9 +30,9 @@ the build for your platform; the right-hand column lists alternative formats.
 | Linux | arm64 (aarch64) | [`.AppImage`](https://zenodo.org/records/20827563/files/lmdmapper_1.4.5_arm64_linux.AppImage?download=1) | [`.deb`](https://zenodo.org/records/20827563/files/lmdmapper_1.4.5_arm64_linux.deb?download=1) · [`.rpm`](https://zenodo.org/records/20827563/files/lmdmapper_1.4.5_aarch64_linux.rpm?download=1) · [`.tar.gz`](https://zenodo.org/records/20827563/files/lmdmapper_1.4.5_arm64_linux.tar.gz?download=1) |
 
 Verify downloads against [`SHA256SUMS-1.4.5.txt`](https://zenodo.org/records/20827563/files/SHA256SUMS-1.4.5.txt?download=1).
-For other releases, browse the
-[all-versions Zenodo record](https://doi.org/10.5281/zenodo.20827562) or the
+For other releases, browse the [all-versions Zenodo record](https://doi.org/10.5281/zenodo.20827562) or the
 [GitHub releases page](https://github.com/anttonalberdi/lmdmapper/releases).
+<!-- END DOWNLOADS -->
 
 ## Features
 - Open one or more `.lif` files into a single project
