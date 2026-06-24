@@ -56,29 +56,63 @@ const CONCEPT = (process.env.ZENODO_CONCEPT_RECID || '').trim();
 
 const authHeader = () => ({ Authorization: `Bearer ${TOKEN}` });
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
+const MAX_ATTEMPTS = 5;
+
 const api = async (method, url, { json, body, headers } = {}) => {
   const fullUrl = url.startsWith('http') ? url : `${BASE}${url}`;
-  const init = { method, headers: { ...authHeader(), ...(headers || {}) } };
-  if (json !== undefined) {
-    init.headers['Content-Type'] = 'application/json';
-    init.body = JSON.stringify(json);
-  } else if (body !== undefined) {
-    init.body = body;
-  }
-  const res = await fetch(fullUrl, init);
-  const text = await res.text();
-  let parsed;
-  try {
-    parsed = text ? JSON.parse(text) : {};
-  } catch {
-    parsed = { raw: text };
-  }
-  if (!res.ok) {
+  const buildInit = () => {
+    const init = { method, headers: { ...authHeader(), ...(headers || {}) } };
+    if (json !== undefined) {
+      init.headers['Content-Type'] = 'application/json';
+      init.body = JSON.stringify(json);
+    } else if (body !== undefined) {
+      init.body = body;
+    }
+    return init;
+  };
+
+  let lastError;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
+    let res;
+    try {
+      res = await fetch(fullUrl, buildInit());
+    } catch (networkError) {
+      // Network-level failure (e.g. "fetch failed" / socket hang up). Retry.
+      lastError = networkError;
+      if (attempt < MAX_ATTEMPTS) {
+        const wait = 2000 * 2 ** (attempt - 1);
+        console.log(`  network error on ${method} ${fullUrl} (attempt ${attempt}); retrying in ${wait / 1000}s`);
+        await sleep(wait);
+        continue;
+      }
+      throw new Error(`Zenodo ${method} ${fullUrl} failed after ${MAX_ATTEMPTS} attempts: ${networkError.message || networkError}`);
+    }
+
+    const text = await res.text();
+    let parsed;
+    try {
+      parsed = text ? JSON.parse(text) : {};
+    } catch {
+      parsed = { raw: text };
+    }
+    if (res.ok) {
+      return parsed;
+    }
+    if (RETRYABLE_STATUS.has(res.status) && attempt < MAX_ATTEMPTS) {
+      const wait = 2000 * 2 ** (attempt - 1);
+      console.log(`  HTTP ${res.status} on ${method} ${fullUrl} (attempt ${attempt}); retrying in ${wait / 1000}s`);
+      await sleep(wait);
+      lastError = new Error(`HTTP ${res.status}`);
+      continue;
+    }
     throw new Error(
       `Zenodo ${method} ${fullUrl} -> ${res.status} ${res.statusText}\n${JSON.stringify(parsed, null, 2)}`
     );
   }
-  return parsed;
+  throw lastError;
 };
 
 const loadMetadata = (version) => {

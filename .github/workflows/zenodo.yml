@@ -1,0 +1,61 @@
+name: Archive to Zenodo
+
+# Archive an already-published GitHub release to Zenodo without rebuilding.
+# Useful to retry the Zenodo step if it failed during the Release workflow.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version to archive, without the leading v (e.g. 1.4.5)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  archive:
+    name: Archive ${{ inputs.version }} to Zenodo
+    runs-on: ubuntu-latest
+    env:
+      ZENODO_TOKEN: ${{ secrets.ZENODO_TOKEN }}
+
+    steps:
+      - name: Fail if no Zenodo token
+        if: ${{ env.ZENODO_TOKEN == '' }}
+        run: |
+          echo "ZENODO_TOKEN secret is not set." >&2
+          exit 1
+
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: v${{ inputs.version }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Download release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${{ inputs.version }}"
+          mkdir -p zenodo-upload
+          gh release download "v${version}" \
+            --repo "${{ github.repository }}" \
+            --dir zenodo-upload \
+            --pattern 'lmdmapper_*' \
+            --pattern 'SHA256SUMS-*'
+          # Source archive of the tagged commit (matches the Release workflow).
+          git archive --format=zip --prefix="lmdmapper-${version}/" \
+            -o "zenodo-upload/lmdmapper_${version}_source.zip" HEAD
+          ls -lh zenodo-upload
+
+      - name: Archive release to Zenodo
+        env:
+          ZENODO_CONCEPT_RECID: ${{ vars.ZENODO_CONCEPT_RECID }}
+          ZENODO_BASE: ${{ vars.ZENODO_BASE }}
+        run: node scripts/zenodo-publish.js --dir zenodo-upload
