@@ -61,10 +61,16 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
 const MAX_ATTEMPTS = 5;
 
-const api = async (method, url, { json, body, headers } = {}) => {
+const api = async (method, url, { json, body, headers, timeoutMs = 60000 } = {}) => {
   const fullUrl = url.startsWith('http') ? url : `${BASE}${url}`;
   const buildInit = () => {
-    const init = { method, headers: { ...authHeader(), ...(headers || {}) } };
+    const init = {
+      method,
+      headers: { ...authHeader(), ...(headers || {}) },
+      // Abort a stalled connection so the retry loop can start a fresh one,
+      // rather than hanging until undici's 5-minute headers timeout.
+      signal: AbortSignal.timeout(timeoutMs)
+    };
     if (json !== undefined) {
       init.headers['Content-Type'] = 'application/json';
       init.body = JSON.stringify(json);
@@ -139,7 +145,9 @@ const uploadFile = async (bucketUrl, file) => {
   const data = fs.readFileSync(file.fullPath);
   await api('PUT', `${bucketUrl}/${encodeURIComponent(file.name)}`, {
     body: data,
-    headers: { 'Content-Type': 'application/octet-stream' }
+    headers: { 'Content-Type': 'application/octet-stream' },
+    // Large binaries (~120 MB) need headroom, but still abort a true stall.
+    timeoutMs: 240000
   });
   console.log(`  uploaded ${file.name} (${(data.length / 1e6).toFixed(1)} MB)`);
 };

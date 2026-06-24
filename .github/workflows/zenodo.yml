@@ -28,10 +28,12 @@ jobs:
           echo "ZENODO_TOKEN secret is not set." >&2
           exit 1
 
+      # Check out the default branch (latest archive script) but keep full
+      # history + tags so the source archive can be built from the release tag.
       - name: Check out repository
         uses: actions/checkout@v4
         with:
-          ref: v${{ inputs.version }}
+          fetch-depth: 0
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -49,9 +51,9 @@ jobs:
             --dir zenodo-upload \
             --pattern 'lmdmapper_*' \
             --pattern 'SHA256SUMS-*'
-          # Source archive of the tagged commit (matches the Release workflow).
+          # Source archive of the tagged release commit.
           git archive --format=zip --prefix="lmdmapper-${version}/" \
-            -o "zenodo-upload/lmdmapper_${version}_source.zip" HEAD
+            -o "zenodo-upload/lmdmapper_${version}_source.zip" "v${version}"
           ls -lh zenodo-upload
 
       - name: Archive release to Zenodo
