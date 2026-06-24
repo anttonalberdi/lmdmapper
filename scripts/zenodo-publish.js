@@ -182,7 +182,21 @@ const main = async () => {
     console.log('\nResolving latest published version of concept...');
     const latest = await api('GET', `/api/records/${CONCEPT}`);
     const latestId = latest.id;
-    console.log(`Latest version record id: ${latestId}`);
+    console.log(`Latest version record id: ${latestId} (version ${latest.metadata?.version})`);
+    // Idempotency: if this exact version is already published, do not create a
+    // duplicate record (e.g. when a release run is re-triggered).
+    if (latest.metadata?.version === version) {
+      console.log(`\nVersion ${version} is already archived; skipping new upload.`);
+      reportResult({
+        doi: latest.doi,
+        conceptRecid: latest.conceptrecid,
+        conceptDoi: latest.conceptdoi,
+        htmlUrl: latest.links?.self_html || latest.links?.html,
+        versionRecid: latest.id,
+        skipped: true
+      });
+      return;
+    }
     const newVersion = await api(
       'POST',
       `/api/deposit/depositions/${latestId}/actions/newversion`
@@ -216,18 +230,24 @@ const main = async () => {
   );
 
   const doi = published.doi || published.metadata?.doi;
-  const conceptRecid = published.conceptrecid;
-  const conceptDoi = published.conceptdoi || published.metadata?.conceptdoi;
-  const htmlUrl = published.links?.record_html || published.links?.html;
-  // Record id of this published version (used to build README download links).
-  const versionRecid = published.record_id || (doi ? doi.split('.').pop() : '');
+  reportResult({
+    doi,
+    conceptRecid: published.conceptrecid,
+    conceptDoi: published.conceptdoi || published.metadata?.conceptdoi,
+    htmlUrl: published.links?.record_html || published.links?.html,
+    // Record id of this published version (used to build README download links).
+    versionRecid: published.record_id || (doi ? doi.split('.').pop() : '')
+  });
+};
 
-  console.log('\n=== Zenodo publish complete ===');
+const reportResult = ({ doi, conceptRecid, conceptDoi, htmlUrl, versionRecid, skipped }) => {
+  console.log(`\n=== Zenodo ${skipped ? 'already published' : 'publish complete'} ===`);
   console.log(`Version DOI   : ${doi}`);
   console.log(`Concept DOI   : ${conceptDoi || '(n/a)'}`);
   console.log(`Concept recid : ${conceptRecid}`);
+  console.log(`Version recid : ${versionRecid}`);
   console.log(`Record URL    : ${htmlUrl}`);
-  if (!CONCEPT) {
+  if (!CONCEPT && !skipped) {
     console.log(
       `\nIMPORTANT: store this concept recid as the repo variable ZENODO_CONCEPT_RECID\n` +
         `so future releases chain as new versions:\n  ${conceptRecid}`
@@ -246,7 +266,7 @@ const main = async () => {
       `## Zenodo archive\n\n` +
         `- Version DOI: ${doi}\n` +
         `- Concept DOI: ${conceptDoi || '(n/a)'}\n` +
-        `- Concept recid: \`${conceptRecid}\`\n` +
+        `- Version recid: \`${versionRecid}\`\n` +
         `- Record: ${htmlUrl}\n`
     );
   }

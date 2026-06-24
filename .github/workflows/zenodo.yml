@@ -65,6 +65,7 @@ jobs:
 
       - name: Update README download links on main
         if: ${{ steps.zenodo.outputs.version_recid != '' }}
+        continue-on-error: true
         env:
           ZENODO_BASE: ${{ vars.ZENODO_BASE }}
           RECID: ${{ steps.zenodo.outputs.version_recid }}
@@ -73,13 +74,24 @@ jobs:
           version="${{ inputs.version }}"
           git config user.name "anttonalberdi"
           git config user.email "anttonalberdi@users.noreply.github.com"
-          git fetch origin main
-          git checkout -B main origin/main
-          node scripts/update-readme-downloads.js --recid "$RECID" --version "$version"
-          if git diff --quiet -- README.md; then
-            echo "README download section already current."
-            exit 0
-          fi
-          git add README.md
-          git commit -m "Update README download links for ${version}"
-          git push origin main
+          for attempt in 1 2 3 4 5; do
+            git fetch origin main
+            git reset --hard origin/main
+            if ! node scripts/update-readme-downloads.js --recid "$RECID" --version "$version"; then
+              echo "README generator failed (non-fatal)."
+              exit 0
+            fi
+            if git diff --quiet -- README.md; then
+              echo "README download section already current."
+              exit 0
+            fi
+            git add README.md
+            git commit -m "Update README download links for ${version}"
+            if git push origin HEAD:main; then
+              echo "README updated for ${version}."
+              exit 0
+            fi
+            echo "Push raced or failed (attempt ${attempt}); retrying."
+            sleep 5
+          done
+          echo "Could not push README update after retries (non-fatal)."

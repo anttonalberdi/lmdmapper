@@ -90,13 +90,35 @@ const ROWS = [
   }
 ];
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// A freshly published record can take a moment to appear in the API, so retry.
+const fetchRecord = async (recid) => {
+  const url = `${BASE}/api/records/${recid}`;
+  const attempts = 6;
+  let lastError;
+  for (let i = 1; i <= attempts; i += 1) {
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(30000) });
+      if (res.ok) {
+        return res.json();
+      }
+      lastError = new Error(`HTTP ${res.status} ${res.statusText}`);
+    } catch (error) {
+      lastError = error;
+    }
+    if (i < attempts) {
+      const wait = 5000 * i;
+      console.log(`  Zenodo record ${recid} not ready (attempt ${i}); retrying in ${wait / 1000}s`);
+      await sleep(wait);
+    }
+  }
+  throw new Error(`Could not fetch Zenodo record ${recid}: ${lastError?.message || lastError}`);
+};
+
 const main = async () => {
   const options = parseArgs();
-  const res = await fetch(`${BASE}/api/records/${options.recid}`);
-  if (!res.ok) {
-    throw new Error(`Zenodo GET /api/records/${options.recid} -> ${res.status} ${res.statusText}`);
-  }
-  const record = await res.json();
+  const record = await fetchRecord(options.recid);
   const fileNames = (record.files || []).map((file) => file.key);
   if (!fileNames.length) {
     throw new Error(`Record ${options.recid} has no files`);
