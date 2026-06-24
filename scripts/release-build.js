@@ -16,6 +16,11 @@ Usage:
 Examples:
   npm run release:build -- --version 1.0.1 --notes release-notes/1.0.1.md
   npm run release:build -- --version 1.0.1 --skip-build
+
+Build coverage:
+  macOS hosts build macOS x64/arm64 and Windows x64/arm64/ia32 artifacts.
+  Windows hosts build Windows x64/arm64/ia32 artifacts.
+  Linux hosts build Linux x64/arm64 artifacts.
 `);
 };
 
@@ -180,13 +185,40 @@ const hashFile = (relativePath) => {
   return `${digest}  ${relativePath}`;
 };
 
+const releaseArtifactExtensions = [
+  '.AppImage',
+  '.deb',
+  '.dmg',
+  '.exe',
+  '.pkg',
+  '.rpm',
+  '.tar.gz',
+  '.tar.xz',
+  '.zip'
+];
+
+const getBuiltReleaseArtifacts = () => {
+  const releaseDir = path.join(ROOT, 'release');
+  if (!fs.existsSync(releaseDir)) {
+    return [];
+  }
+  return fs
+    .readdirSync(releaseDir)
+    .filter((fileName) => {
+      if (!fileName.startsWith(`lmdmapper_${options.version}_`)) {
+        return false;
+      }
+      if (fileName.endsWith('.blockmap')) {
+        return false;
+      }
+      return releaseArtifactExtensions.some((extension) => fileName.endsWith(extension));
+    })
+    .sort()
+    .map((fileName) => `release/${fileName}`);
+};
+
 const writeChecksums = () => {
-  const candidates = [
-    `release/lmdmapper_${options.version}_arm64_mac.dmg`,
-    `release/lmdmapper_${options.version}_arm64_mac.zip`,
-    `release/lmdmapper_${options.version}_x64_win.exe`,
-    `release/lmdmapper_${options.version}_x64_win.zip`
-  ];
+  const candidates = getBuiltReleaseArtifacts();
   const hashes = candidates.map(hashFile).filter(Boolean);
   if (!hashes.length) {
     return;
@@ -198,6 +230,29 @@ const writeChecksums = () => {
       'utf8'
     );
   }
+};
+
+const buildReleaseArtifacts = () => {
+  run('npm', ['run', 'build:renderer']);
+  run('npm', ['run', 'build:main']);
+
+  if (process.platform === 'darwin') {
+    run('npx', ['electron-builder', '--mac', '--x64', '--arm64', '--publish', 'never']);
+    run('npx', ['electron-builder', '--win', '--x64', '--arm64', '--ia32', '--publish', 'never']);
+    return;
+  }
+
+  if (process.platform === 'win32') {
+    run('npx', ['electron-builder', '--win', '--x64', '--arm64', '--ia32', '--publish', 'never']);
+    return;
+  }
+
+  if (process.platform === 'linux') {
+    run('npx', ['electron-builder', '--linux', '--x64', '--arm64', '--publish', 'never']);
+    return;
+  }
+
+  throw new Error(`Unsupported release build host platform: ${process.platform}`);
 };
 
 const syncVersionStrings = () => {
@@ -251,8 +306,7 @@ const main = () => {
   }
 
   if (!options.skipBuild) {
-    run('npm', ['run', 'build']);
-    run('npx', ['electron-builder', '--win', '--x64']);
+    buildReleaseArtifacts();
     writeChecksums();
   }
 

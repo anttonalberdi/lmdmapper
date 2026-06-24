@@ -2469,7 +2469,8 @@ button.coord-indicator {
 }
 
 .plate-scroll {
-  overflow: visible;
+  overflow-x: auto;
+  overflow-y: visible;
 }
 
 .plate-notes-row {
@@ -2737,16 +2738,21 @@ button.coord-indicator {
   color: var(--muted);
 }
 
+.plate th.area-col-cell {
+  min-width: 64px;
+}
+
 .collection-area-input {
   width: 100%;
   min-width: 0;
   text-align: center;
-  padding: 4px 3px;
+  padding: 4px 2px;
   border-radius: 6px;
   border: 1px solid rgba(148, 163, 184, 0.3);
   background: rgba(15, 23, 42, 0.5);
   color: var(--ink);
-  font-size: 11px;
+  font-size: 10px;
+  letter-spacing: -0.01em;
   font-family: 'Source Code Pro', ui-monospace, monospace;
 }
 

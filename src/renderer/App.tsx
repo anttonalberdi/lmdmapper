@@ -710,6 +710,9 @@ const PLATE_ROWS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
 const PLATE_COLS = Array.from({ length: 12 }, (_, index) => index + 1);
 const DEFAULT_SAMPLE: SampleType = 'P';
 const DISABLED_SAMPLE: SampleType = 'N';
+// Maximum number of digits allowed for a collection column area value (in µm²).
+// Areas are whole numbers; a column is considered "set" once any digit is entered.
+const MAX_AREA_DIGITS = 8;
 const SAMPLE_OPTIONS: Array<{ type: SampleType; label: string }> = [
   { type: 'P', label: 'Positive sample (P)' },
   { type: 'X', label: 'Positive control (X)' },
@@ -1822,7 +1825,7 @@ const normalizeCollectionColumnAreas = (raw: unknown): [string[], string[]] => {
       const value = row[colIndex];
       const digits = String(value ?? '')
         .replace(/\D/g, '')
-        .slice(0, 4);
+        .slice(0, MAX_AREA_DIGITS);
       next[plateIndex][colIndex] = digits;
     }
   }
@@ -6920,12 +6923,12 @@ export default function App(): JSX.Element {
     if (workspaceReadOnly) {
       return;
     }
-    const digits = value.replace(/\D/g, '').slice(0, 4);
+    const digits = value.replace(/\D/g, '').slice(0, MAX_AREA_DIGITS);
     setCollectionColumnWarning(null);
     if ((collectionColumnAreas[plateIndex]?.[colIndex] ?? '') !== digits) {
       markCollectionEdited();
     }
-    const showHint = digits.length === 4 && isCollectionAreaEntryValid(plateIndex, colIndex, digits);
+    const showHint = digits.length > 0 && isCollectionAreaEntryValid(plateIndex, colIndex, digits);
     setCollectionColumnAreas((prev) => {
       const next: [string[], string[]] = [prev[0].slice(), prev[1].slice()];
       if (next[plateIndex][colIndex] === digits) {
@@ -6970,8 +6973,8 @@ export default function App(): JSX.Element {
       const currentArea = (collectionColumnAreas[plateIndex]?.[colIndex] ?? '').trim();
       const previousArea = (collectionColumnAreas[plateIndex]?.[colIndex - 1] ?? '').trim();
       return (
-        currentArea.length === 4 &&
-        previousArea.length === 4 &&
+        currentArea.length > 0 &&
+        previousArea.length > 0 &&
         currentArea === previousArea
       );
     },
@@ -6980,7 +6983,7 @@ export default function App(): JSX.Element {
 
   const isCollectionAreaEntryValid = useCallback(
     (plateIndex: number, colIndex: number, value: string) => {
-      if (value.length !== 4) {
+      if (value.length === 0) {
         return false;
       }
       if (isCollectionColumnNotUsed(plateIndex, colIndex)) {
@@ -6994,7 +6997,7 @@ export default function App(): JSX.Element {
           return false;
         }
         const neighbor = (collectionColumnAreas[plateIndex]?.[neighborColIndex] ?? '').trim();
-        return neighbor.length === 4 && neighbor === value;
+        return neighbor.length > 0 && neighbor === value;
       };
       return !hasEqualNeighbor(colIndex - 1) && !hasEqualNeighbor(colIndex + 1);
     },
@@ -7148,9 +7151,9 @@ export default function App(): JSX.Element {
           didChange = true;
         }
 
-        const areaDigits = row.area.replace(/\D/g, '').slice(0, 4);
+        const areaDigits = row.area.replace(/\D/g, '').slice(0, MAX_AREA_DIGITS);
         if (row.area.trim().length > 0) {
-          if (areaDigits.length !== 4) {
+          if (areaDigits.length === 0) {
             issues.push(`Invalid Area value "${row.area}" for ${row.plate} ${row.well}.`);
           } else {
             const currentArea = nextAreas[plateIndex][well.colIndex];
@@ -8125,6 +8128,50 @@ export default function App(): JSX.Element {
     setStatus(`Exported CSV: ${response.filePath.split(/[\\\\/]/).pop()}`);
   };
 
+  const exportWorkspaceMetadataCsv = async (columnsToExport: MetadataDisplayColumn[]) => {
+    if (!window.lifApi?.exportFile) {
+      setStatus('Export not available.');
+      return;
+    }
+    const lines = [
+      ['Session', ...columnsToExport.map((column) => column.label)]
+        .map((value) => csvEscape(value))
+        .join(',')
+    ];
+    let rowCount = 0;
+    for (const session of workspaceSessionPanels) {
+      const rowsToExport = session.metadataRows.slice().sort(compareMetadataRowsByCsvWell);
+      for (const row of rowsToExport) {
+        lines.push(
+          [
+            csvEscape(session.label),
+            ...columnsToExport.map((column) =>
+              csvEscape(getMetadataColumnValue(row, column.key, 'export'))
+            )
+          ].join(',')
+        );
+        rowCount += 1;
+      }
+    }
+    const baseName = safeFilename(projectName || '', 'metadata');
+    const response = await window.lifApi.exportFile({
+      data: lines.join('\n'),
+      encoding: 'utf8',
+      defaultPath: `${baseName}.csv`,
+      filters: [{ name: 'CSV', extensions: ['csv'] }]
+    });
+    if ('error' in response) {
+      setStatus(response.error);
+      return;
+    }
+    if ('canceled' in response) {
+      return;
+    }
+    setStatus(
+      `Exported CSV: ${response.filePath.split(/[\\\\/]/).pop()} (${rowCount} row${rowCount === 1 ? '' : 's'} across ${workspaceSessionPanels.length} session${workspaceSessionPanels.length === 1 ? '' : 's'}).`
+    );
+  };
+
   const handleExportMetadataCsv = async () => {
     const orderedColumns = orderMetadataColumns(allMetadataColumns, metadataExportOrder);
     const columnsToExport = orderedColumns.filter(
@@ -8134,7 +8181,11 @@ export default function App(): JSX.Element {
       setStatus('Select at least one metadata column to export.');
       return;
     }
-    await exportMetadataCsv(columnsToExport);
+    if (workspaceReadOnly) {
+      await exportWorkspaceMetadataCsv(columnsToExport);
+    } else {
+      await exportMetadataCsv(columnsToExport);
+    }
     setMetadataExportPopupOpen(false);
   };
 
@@ -13942,12 +13993,13 @@ export default function App(): JSX.Element {
                                 {PLATE_COLS.map((col, colIndex) => (
                                   <th
                                     key={`workspace-collection-area-${session.id}-${plateIndex}-${col}`}
-                                    className={isSplit && col === 6 ? 'plate-divider' : undefined}
+                                    className={`area-col-cell ${isSplit && col === 6 ? 'plate-divider' : ''}`.trim()}
                                   >
                                     <input
                                       type="text"
                                       className="collection-area-input"
                                       value={session.collectionColumnAreas[plateIndex]?.[colIndex] ?? ''}
+                                      title={session.collectionColumnAreas[plateIndex]?.[colIndex] || undefined}
                                       disabled
                                       readOnly
                                     />
@@ -15307,7 +15359,11 @@ export default function App(): JSX.Element {
                       </div>
                     ) : null}
                   </div>
-                  <button type="button" className="secondary metadata-columns-button" disabled>
+                  <button
+                    type="button"
+                    className="secondary metadata-export-button"
+                    onClick={openMetadataExportPopup}
+                  >
                     Export CSV
                   </button>
                 </aside>
@@ -16053,17 +16109,17 @@ export default function App(): JSX.Element {
                             return (
                               <th
                                 key={`collection-area-input-${col}`}
-                                className={
+                                className={`area-col-cell ${
                                   isPlateSplit(index) && col === 6
                                     ? 'plate-divider'
-                                    : undefined
-                                }
+                                    : ''
+                                }`.trim()}
                               >
                                 <input
                                   type="text"
                                   inputMode="numeric"
                                   pattern="[0-9]*"
-                                  maxLength={4}
+                                  maxLength={MAX_AREA_DIGITS}
                                   className={`collection-area-input ${areaIsDuplicate ? 'invalid' : ''}`}
                                   value={areaCode}
                                   onClick={(event) => event.stopPropagation()}
@@ -16072,13 +16128,13 @@ export default function App(): JSX.Element {
                                     updateCollectionColumnArea(index, colIndex, event.target.value)
                                   }
                                   disabled={workspaceReadOnly || areaInputDisabled}
-                                  placeholder="0000"
+                                  placeholder="Area"
                                   title={
                                     areaIsDuplicate
                                       ? 'Area must be different from the previous column.'
                                       : areaDisabledByNotUsed
                                         ? 'Disabled because all wells in this column are Not used.'
-                                      : undefined
+                                      : areaCode || undefined
                                   }
                                 />
                               </th>
@@ -16093,7 +16149,7 @@ export default function App(): JSX.Element {
                             {PLATE_COLS.map((col, colIndex) => {
                               const sample = plate.cells[rowIndex]?.[colIndex] ?? DEFAULT_SAMPLE;
                               const areaCode = collectionColumnAreas[index]?.[colIndex] ?? '';
-                              const areaMissing = areaCode.length !== 4;
+                              const areaMissing = areaCode.length === 0;
                               const areaIsDuplicate = hasDuplicateCollectionArea(index, colIndex);
                               const sampleDisabled = sample === DISABLED_SAMPLE;
                               const columnLocked =
@@ -16128,7 +16184,7 @@ export default function App(): JSX.Element {
                                       setCollectionColumnWarning({
                                         plateIndex: index,
                                         message:
-                                          'This column is disabled: enter a 4-digit Area value to enable collection.'
+                                          'This column is disabled: enter an Area value to enable collection.'
                                       });
                                     }
                                   }}

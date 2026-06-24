@@ -1,8 +1,8 @@
 {
   "name": "lmdmapper",
-  "version": "1.4.4",
-  "buildDate": "2026-05-14",
-  "description": "LMDmapper - Leica .lif spatial visualization tool (v1.4.4)",
+  "version": "1.4.5",
+  "buildDate": "2026-06-24",
+  "description": "LMDmapper - Leica .lif spatial visualization tool (v1.4.5)",
   "author": "Antton Alberdi",
   "license": "MIT",
   "repository": {
@@ -20,7 +20,11 @@
     "dev:renderer": "vite",
     "dev:main": "tsc -p tsconfig.main.json --watch",
     "dev:electron": "wait-on tcp:127.0.0.1:5174 dist-electron/main/main.js && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5174 nodemon --watch dist-electron --exec \"electron .\"",
-    "build": "npm run build:renderer && npm run build:main && electron-builder",
+    "build": "npm run build:desktop",
+    "build:desktop": "npm run build:renderer && npm run build:main && electron-builder",
+    "build:mac": "npm run build:renderer && npm run build:main && electron-builder --mac --x64 --arm64",
+    "build:win": "npm run build:renderer && npm run build:main && electron-builder --win --x64 --arm64 --ia32",
+    "build:linux": "npm run build:renderer && npm run build:main && electron-builder --linux --x64 --arm64",
     "build:renderer": "vite build",
     "build:main": "tsc -p tsconfig.main.json",
     "lint": "eslint . --ext .ts,.tsx",
@@ -67,8 +71,20 @@
     "mac": {
       "icon": "icon.icns",
       "target": [
-        "dmg",
-        "zip"
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
       ]
     },
     "win": {
@@ -77,13 +93,54 @@
         {
           "target": "nsis",
           "arch": [
-            "x64"
+            "x64",
+            "arm64",
+            "ia32"
           ]
         },
         {
           "target": "zip",
           "arch": [
-            "x64"
+            "x64",
+            "arm64",
+            "ia32"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "buildUniversalInstaller": false
+    },
+    "linux": {
+      "category": "Science",
+      "synopsis": "Leica .lif spatial visualization tool",
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "rpm",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "tar.gz",
+          "arch": [
+            "x64",
+            "arm64"
           ]
         }
       ]

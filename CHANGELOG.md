@@ -2,10 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
-## [Unreleased]
-Target: 1.4.5
+## [1.4.5] - 2026-06-24
 
-- Log all new changes here for the upcoming 1.4.5 release.
+- Collection tab area values now accept whole numbers up to 8 digits (µm²) instead of a fixed 4 digits, so large cut areas such as 5000 and 5000000 are no longer indistinguishable; a column becomes active once any area value is entered, and consecutive columns still cannot share the same value.
+- Metadata CSV export now works in merged multi-session workspaces: the previously disabled button exports every session's rows to a single CSV with a leading `Session` column, honoring the active column selection and filters.
+- Design and Collection plate tables now show a horizontal scrollbar when their content is wider than the available panel, including in merged-session workspaces, so wide plates can be scrolled into view.
+- Expanded release packaging to macOS x64/arm64, Windows x64/arm64/ia32, and Linux x64/arm64 AppImage, DEB, RPM, and tar.gz artifacts, with GitHub release automation and checksums for all produced builds.
 
 ## [1.4.4] - 2026-05-14
 

@@ -6,8 +6,8 @@ exports, plate layouts, spatial coordinates, and downstream sample metadata in a
 local Electron application built with Vite, React, and TypeScript.
 
 Source code is hosted on GitHub so the application can be cloned, audited, and
-modified. Packaged installers are generated locally in `release/`, which is
-intentionally ignored by Git.
+modified. Packaged installers and archives are generated locally in `release/`,
+which is intentionally ignored by Git.
 
 ## Features
 - Open one or more `.lif` files into a single project
@@ -47,7 +47,26 @@ npm run build:main
 npm run build
 ```
 
-Electron Builder will generate macOS and Windows targets in `release/`.
+Electron Builder will generate the default target for the current operating
+system in `release/`. Use the platform-specific commands for release artifacts:
+
+```bash
+npm run build:mac
+npm run build:win
+npm run build:linux
+```
+
+Release builds cover:
+
+| System | Architectures | Artifacts |
+| --- | --- | --- |
+| macOS | x64, arm64 | DMG, ZIP |
+| Windows | x64, arm64, ia32 | NSIS installer, ZIP |
+| Linux | x64, arm64 | AppImage, DEB, RPM, tar.gz |
+
+macOS artifacts should be built on macOS. Linux artifacts should be built on a
+Linux host or with Electron Builder's Linux build container; the release
+workflow builds Linux x64 and arm64 on separate native runners.
 
 ## Release Build Workflow
 1. Create the release notes file: `release-notes/<version>.md`
@@ -60,8 +79,12 @@ What this does:
 - Updates project version files
 - Updates `CHANGELOG.md` using `release-notes/<version>.md`
 - Runs lint
-- Builds macOS arm64 and Windows x64 installers
-- Writes checksums to `release/SHA256SUMS-<version>.txt`
+- Builds the release artifacts supported by the current host
+- Writes checksums for all built release artifacts to `release/SHA256SUMS-<version>.txt`
+
+Tagged releases named `v<x.y.z>` also run the GitHub Actions release workflow,
+which builds macOS, Windows, and Linux artifacts on separate runners and
+publishes them with a combined checksum file.
 
 ## Generate a toy `.lif`
 ```bash

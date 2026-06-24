@@ -1,0 +1,140 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version, without the leading v'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS arm64
+            os: macos-latest
+            artifact: macos-arm64
+            builder_args: --mac --arm64 --publish never
+          - name: macOS x64
+            os: macos-15-intel
+            artifact: macos-x64
+            builder_args: --mac --x64 --publish never
+          - name: Windows x64, arm64, and ia32
+            os: windows-latest
+            artifact: windows
+            builder_args: --win --x64 --arm64 --ia32 --publish never
+          - name: Linux x64
+            os: ubuntu-latest
+            artifact: linux-x64
+            builder_args: --linux --x64 --publish never
+          - name: Linux arm64
+            os: ubuntu-24.04-arm
+            artifact: linux-arm64
+            builder_args: --linux --arm64 --publish never
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install Linux packaging tools
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y fakeroot rpm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check package version
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ github.event.inputs.version || github.ref_name }}
+        run: |
+          expected="${RELEASE_VERSION#v}"
+          actual="$(node -p "require('./package.json').version")"
+          if [ "$actual" != "$expected" ]; then
+            echo "package.json version $actual does not match release version $expected"
+            exit 1
+          fi
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build renderer
+        run: npm run build:renderer
+
+      - name: Build main process
+        run: npm run build:main
+
+      - name: Package artifacts
+        run: npx electron-builder ${{ matrix.builder_args }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.artifact }}
+          path: |
+            release/lmdmapper_*
+            !release/*.blockmap
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Write checksums
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ github.event.inputs.version || github.ref_name }}
+        run: |
+          version="${RELEASE_VERSION#v}"
+          cd release-assets
+          sha256sum lmdmapper_* > "SHA256SUMS-${version}.txt"
+
+      - name: Publish release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ github.event.inputs.version || github.ref_name }}
+        run: |
+          version="${RELEASE_VERSION#v}"
+          tag="v${version}"
+          notes="release-notes/${version}.md"
+          if [ ! -f "$notes" ]; then
+            notes="release-notes.md"
+            printf 'LMDmapper %s release.\n' "$version" > "$notes"
+          fi
+          target_args=()
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            target_args=(--target "$GITHUB_SHA")
+          fi
+          gh release create "$tag" release-assets/* \
+            "${target_args[@]}" \
+            --title "LMDmapper ${version}" \
+            --notes-file "$notes"
