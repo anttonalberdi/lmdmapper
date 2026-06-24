@@ -1,4 +1,7 @@
-# LMDmapper (v1.4.4)
+# LMDmapper (v1.4.5)
+
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20827562.svg)](https://doi.org/10.5281/zenodo.20827562)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 LMDmapper is an open-source desktop tool for curating Leica laser
 microdissection sessions. It links `.lif` image metadata, microscope CSV
@@ -94,9 +97,9 @@ npm run generate:fixture
 This writes `toy.lif` in the project root. Use **Import LIF files** in the app to load it.
 The generated file is ignored by Git.
 
-## Limitations (v1.4.4)
+## Limitations (v1.4.5)
 - Only supports 2D RGB, 8-bit, interleaved data (C=3)
-- Elements with other formats are listed but show “Unsupported format (v1.4.4)”
+- Elements with other formats are listed but show “Unsupported format (v1.4.5)”
 - Spatial layout requires StageposX/StageposY metadata
 
 ## Contributing and License
@@ -106,7 +109,9 @@ Contributions are welcome through GitHub issues and pull requests. See
 guidance.
 
 LMDmapper is released under the [MIT License](LICENSE). If you use it in
-research, cite this repository; citation metadata is provided in
+research, please cite the archived release via its concept DOI
+[10.5281/zenodo.20827562](https://doi.org/10.5281/zenodo.20827562), which always
+resolves to the latest version. Citation metadata is provided in
 [CITATION.cff](CITATION.cff).
 
 ## Notes
